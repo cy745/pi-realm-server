@@ -5,7 +5,7 @@
 # ---- Base ----
 FROM node:22-alpine AS base
 WORKDIR /app
-RUN npm install -g tsx
+RUN apk add --no-cache curl && npm install -g tsx
 ENV NODE_ENV=development
 
 # ---- Dev (hot reload via tsx watch) ----
