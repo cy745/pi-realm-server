@@ -4,6 +4,7 @@ import { Code2, FileCode, GitBranch, History, Settings, Terminal } from 'lucide-
 import type { ModuleMeta } from '../types/module.ts';
 import { StatusBadge } from '../components/common/StatusBadge.tsx';
 import { useServerStatus, type ServerStatus, type CharInfo, type RoomInfo } from '../hooks/useServerStatus.ts';
+import { TerrainMap } from '../components/map/TerrainMap.tsx';
 
 interface ModulePageProps {
   module: ModuleMeta;
@@ -62,7 +63,21 @@ export function ModulePage({ module }: ModulePageProps) {
       )}
 
       {/* World-specific detail panels */}
-      {module.id === 'map-state' && rooms.length > 0 && <RoomDetail rooms={rooms} chars={chars} />}
+      {module.id === 'map-state' && rooms.length > 0 && (
+        <>
+          <section className="mb-6">
+            <div className="panel">
+              <div className="panel-header">
+                <div className="text-xs uppercase tracking-wider text-ink-500 font-mono font-medium">Interactive Map</div>
+              </div>
+              <div className="p-0">
+                <TerrainMap locations={rooms} characters={chars} centerX={500} centerY={800} className="rounded-sm" />
+              </div>
+            </div>
+          </section>
+          <RoomDetail rooms={rooms} chars={chars} />
+        </>
+      )}
       {module.id === 'tick-loop' && status && <TickDetail status={status} />}
 
       {/* Source + origin */}

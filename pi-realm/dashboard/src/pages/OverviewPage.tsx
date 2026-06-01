@@ -4,6 +4,7 @@ import { Box, Cpu, Layers, TrendingUp } from 'lucide-react';
 import { MODULES, CATEGORIES } from '../data/modules.ts';
 import { LiveModuleCard } from '../components/common/LiveModuleCard.tsx';
 import { useServerStatus } from '../hooks/useServerStatus.ts';
+import { TerrainMap } from '../components/map/TerrainMap.tsx';
 import type { ModuleMeta } from '../types/module.ts';
 
 interface OverviewPageProps {
@@ -108,7 +109,27 @@ export function OverviewPage({ onSelectModule }: OverviewPageProps) {
         )}
       </section>
 
-      {/* Rooms Map */}
+      {/* Interactive Terrain Map */}
+      <section className="mb-10">
+        <div className="flex items-end justify-between mb-4 pb-2 border-b border-ink-200">
+          <div className="flex items-center gap-3">
+            <Layers className="w-4 h-4 text-ink-700" />
+            <div>
+              <h2 className="text-sm font-semibold text-ink-900">Interactive Map</h2>
+              <p className="text-xs text-ink-500">Drag to pan · Scroll to zoom · Perlin noise terrain</p>
+            </div>
+          </div>
+        </div>
+        <TerrainMap
+          locations={rooms}
+          characters={chars}
+          centerX={500}
+          centerY={800}
+          className="border border-ink-200 rounded-sm"
+        />
+      </section>
+
+      {/* Location cards */}
       <section className="mb-10">
         <div className="flex items-end justify-between mb-4 pb-2 border-b border-ink-200">
           <div className="flex items-center gap-3">
