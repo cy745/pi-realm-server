@@ -11,12 +11,6 @@ interface LiveModuleCardProps {
   onClick?: () => void;
 }
 
-function fmt(v: number): string {
-  if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
-  return String(v);
-}
-
 function fmtMem(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(0)}MB`;
 }
@@ -39,7 +33,7 @@ export function LiveModuleCard({ module, liveStatus, onClick }: LiveModuleCardPr
         return [
           { label: 'Rooms', value: liveStatus.world.rooms, trend: 'flat' as const },
           { label: 'Characters', value: liveStatus.world.characters },
-          { label: 'Memory', value: fmt(process.hrtime.bigint ? 0 : 0) },
+          { label: 'Memory', value: '—' },
         ];
       case 'transport':
         return [

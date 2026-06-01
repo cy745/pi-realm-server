@@ -69,11 +69,11 @@ export function useServerStatus(pollMs = 3000): {
     return () => clearInterval(timer);
   }, [pollMs]);
 
-  // WebSocket for live events
+  // WebSocket for live events — connect through Vite proxy
   useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = 'localhost:3001';
-    const ws = new WebSocket(`${proto}//${host}/ws`);
+    // Use relative WS URL so Vite dev proxy handles it
+    const wsUrl = `/ws`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => console.log('[ws] connected');
