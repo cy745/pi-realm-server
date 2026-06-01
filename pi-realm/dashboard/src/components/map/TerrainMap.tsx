@@ -9,8 +9,7 @@ interface LM { id: string; name: string; type: string; x: number; y: number; w: 
 interface CD { id: string; name: string; type: string; x: number; y: number; }
 interface Props { locations: LM[]; characters: CD[]; centerX?: number; centerY?: number; className?: string; }
 
-// All in one coordinate system: 1 world meter = PPM * zoom screen pixels
-const PPM = 2; // pixels per world meter (at zoom=1) — higher = sharper
+// Coordinate system: container scaled by zoom. 1 world meter = zoom screen pixels.
 
 export function TerrainMap({ locations, characters, centerX = 500, centerY = 800, className = '' }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -58,7 +57,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       });
       app.stage.on('globalpointermove', (e) => {
         if (!s.dragging) return;
-        const f = s.zoom * PPM;
+        const f = s.zoom;
         if (f <= 0) return;
         s.vx = s.dragVx - (e.global.x - s.dragSx) / f;
         s.vy = s.dragVy - (e.global.y - s.dragSy) / f;
@@ -129,8 +128,8 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     world.scale.set(zoom);
 
     // World bounds (relative to view center vx, vy)
-    const halfW = (w / 2 / zoom) / PPM;  // half viewport in world meters
-    const halfH = (h / 2 / zoom) / PPM;
+    const halfW = w / 2 / zoom;  // half viewport in world meters
+    const halfH = h / 2 / zoom;
     const minX = vx - halfW;
     const minY = vy - halfH;
 
@@ -174,7 +173,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     }
 
     // ── Grid ──────────────────────────────────────────
-    if (100 / PPM * zoom > 3) {
+    if (100 * zoom > 3) {
       g.stroke({ width: 0.5, color: 0x000000, alpha: 0.04 });
       for (let gx = Math.floor(minX / 100) * 100; gx <= maxX; gx += 100) {
         g.moveTo(tx(gx), -halfH).lineTo(tx(gx), halfH);
@@ -184,7 +183,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       }
       g.stroke();
     }
-    if (1000 / PPM * zoom > 3) {
+    if (1000 * zoom > 3) {
       g.stroke({ width: 1, color: 0x000000, alpha: 0.1 });
       for (let gx = Math.floor(minX / 1000) * 1000; gx <= maxX; gx += 1000) {
         g.moveTo(tx(gx), -halfH).lineTo(tx(gx), halfH);
