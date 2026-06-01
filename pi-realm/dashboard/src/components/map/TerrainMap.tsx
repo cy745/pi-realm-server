@@ -40,12 +40,16 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     if (!div || state.current.app) return;
 
     (async () => {
+      const w0 = div.clientWidth || 800;
+      const h0 = div.clientHeight || 400;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const app = new Application();
       await app.init({
-        resizeTo: div,
+        width: w0,
+        height: h0,
         background: '#1a3a5c',
-        antialias: true,
-        resolution: window.devicePixelRatio || 1,
+        antialias: false,
+        resolution: dpr,
         autoDensity: true,
       });
       div.appendChild(app.canvas);
@@ -56,6 +60,13 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       const tc = new Container();
       app.stage.addChild(tc);
       s.tc = tc;
+
+      // Handle WebGL context loss
+      app.canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        console.warn('[map] WebGL context lost, reloading...');
+        setTimeout(() => window.location.reload(), 1000);
+      });
 
       // Enable stage interaction
       app.stage.eventMode = 'static';
@@ -98,11 +109,15 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       };
       window.addEventListener('keydown', onKey);
 
-      // Resize
+      // Resize (manual)
       const ro = new ResizeObserver(() => {
-        app.resize();
-        s.w = app.screen.width;
-        s.h = app.screen.height;
+        const nw = div.clientWidth || 800;
+        const nh = div.clientHeight || 400;
+        if (nw !== app.screen.width || nh !== app.screen.height) {
+          app.renderer.resize(nw, nh);
+        }
+        s.w = nw;
+        s.h = nh;
         render(s);
       });
       ro.observe(div);
