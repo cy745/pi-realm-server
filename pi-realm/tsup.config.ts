@@ -2,8 +2,7 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig({
   entry: {
-    'server': 'src/server.ts',
-    'client/tui': 'src/client/tui.ts',
+    server: 'src/server.ts',
   },
   format: ['esm'],
   target: 'node22',

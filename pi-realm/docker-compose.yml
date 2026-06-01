@@ -1,0 +1,38 @@
+version: '3'
+
+services:
+  # ============================================================
+  # Backend server — Pi Realm game server
+  # Dev mode with hot reload via tsx watch
+  # ============================================================
+  server:
+    build:
+      context: .
+      target: dev
+    container_name: pi-realm-server
+    ports:
+      - '3001:3001'
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/app/src
+      - ./package.json:/app/package.json
+      - ./tsconfig.json:/app/tsconfig.json
+      # Persistent data
+      - pi-realm-data:/app/data
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - HOST=0.0.0.0
+    restart: unless-stopped
+    # tsx watch restarts automatically when src/ files change
+    command: ['tsx', 'watch', 'src/server.ts']
+    # Health check
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/api/health']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pi-realm-data:
