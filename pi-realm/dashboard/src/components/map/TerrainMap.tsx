@@ -44,8 +44,8 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     (async () => {
       const app = new Application();
       await app.init({
-        width: div.clientWidth || 800,
-        height: div.clientHeight || 400,
+        width: Math.max(100, div.clientWidth || 800),
+        height: Math.max(100, div.clientHeight || 500),
         background: '#1a3a5c',
         antialias: false,
         resolution: Math.min(window.devicePixelRatio || 1, 2),
@@ -299,7 +299,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
 
   return (
     <div ref={rootRef} className={`relative overflow-hidden bg-ink-900 ${className}`}
-      style={{ width: '100%', height: '100%', minHeight: '400px' }}>
+      style={{ width: '100%', height: '500px' }}>
       {!ready && <div className="absolute inset-0 flex items-center justify-center text-white/50 text-xs font-mono">Initializing...</div>}
     </div>
   );
