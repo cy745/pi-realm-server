@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sampleTerrain, getTerrainColor } from './perlin.ts';
+import Stats from 'stats.js';
 
 interface LocationMarker {
   id: string;
@@ -58,11 +59,26 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const renderPending = useRef(0);
+  const statsRef = useRef<Stats | null>(null);
 
-  // Track container size
+  // Track container size + init Stats.js
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    // Init Stats (FPS monitor, top-left)
+    if (!statsRef.current) {
+      const stats = new Stats();
+      stats.showPanel(0); // 0=fps, 1=ms, 2=memory
+      stats.dom.style.position = 'absolute';
+      stats.dom.style.top = '0';
+      stats.dom.style.left = '0';
+      stats.dom.style.zIndex = '10';
+      stats.dom.style.opacity = '0.7';
+      el.appendChild(stats.dom);
+      statsRef.current = stats;
+    }
+
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) {
         const { width, height } = e.contentRect;
@@ -70,7 +86,13 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       }
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (statsRef.current) {
+        try { statsRef.current.dom.remove(); } catch { /* noop */ }
+        statsRef.current = null;
+      }
+    };
   }, []);
 
   // ── Mouse drag ──────────────────────────────────
@@ -109,6 +131,9 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
   // ── Main render ─────────────────────────────────
 
   const draw = useCallback(() => {
+    const stats = statsRef.current;
+    if (stats) stats.begin();
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -276,6 +301,8 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     ctx.moveTo(w / 2 - 10, h / 2); ctx.lineTo(w / 2 + 10, h / 2);
     ctx.moveTo(w / 2, h / 2 - 10); ctx.lineTo(w / 2, h / 2 + 10);
     ctx.stroke();
+
+    if (stats) stats.end();
   }, [locations, characters, dims]);
 
   // ── Throttled render via rAF ────────────────────
