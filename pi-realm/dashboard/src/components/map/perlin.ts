@@ -1,101 +1,64 @@
-// Browser-side Perlin noise — fixed slope + better terrain distribution
+// Terrain generation using simplex-noise
+// Multi-frequency noise for elevation + moisture layers
 
-function buildPermutation(seed: number): Uint8Array {
-  const p = Uint8Array.from({ length: 256 }, (_, i) => i);
-  let s = seed;
-  for (let i = 255; i > 0; i--) {
-    s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const j = s % (i + 1);
-    [p[i], p[j]] = [p[j]!, p[i]!];
-  }
-  return p;
-}
-
-function fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
-function lerp(a: number, b: number, t: number) { return a + t * (b - a); }
-
-function grad(hash: number, x: number, y: number): number {
-  const h = hash & 3;
-  const u = h < 2 ? x : y;
-  const v = h < 2 ? y : x;
-  return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
-}
-
-function perlin2D(x: number, y: number, perm: Uint8Array): number {
-  const xi = Math.floor(x) & 255;
-  const yi = Math.floor(y) & 255;
-  const xf = x - Math.floor(x);
-  const yf = y - Math.floor(y);
-  const u = fade(xf);
-  const v = fade(yf);
-  const aa = perm[perm[xi]! + yi]!;
-  const ab = perm[perm[xi]! + yi + 1]!;
-  const ba = perm[perm[xi + 1]! + yi]!;
-  const bb = perm[perm[xi + 1]! + yi + 1]!;
-  return lerp(
-    lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u),
-    lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u),
-    v,
-  );
-}
-
-function octaveNoise(x: number, y: number, octaves: number, perm: Uint8Array): number {
-  let value = 0;
-  let amplitude = 1;
-  let frequency = 1;
-  let maxValue = 0;
-  for (let i = 0; i < octaves; i++) {
-    value += amplitude * perlin2D(x * frequency, y * frequency, perm);
-    maxValue += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2;
-  }
-  return value / maxValue;
-}
+import { createNoise2D } from 'simplex-noise';
 
 export interface TerrainSample {
-  height: number;
+  height: number;   // -1 to 1
   type: string;
-  slope: number;
+  slope: number;    // 0-1
 }
 
-const TERRAIN_TYPES: Array<{ name: string; test: (h: number, s: number) => boolean; color: string }> = [
-  { name: 'ocean',    test: (h) => h < -0.5,            color: '#1a3a5c' },
-  { name: 'deepwater', test: (h) => h < -0.3,            color: '#2a5f8f' },
-  { name: 'water',    test: (h) => h < -0.15,            color: '#4a8fbf' },
-  { name: 'beach',    test: (h) => h < -0.05,             color: '#d4c496' },
-  { name: 'plains',   test: (h, s) => Math.abs(h) < 0.15 && s < 0.1,  color: '#8fbc6a' },
-  { name: 'grassland', test: (_h, s) => s < 0.08,         color: '#7dab5c' },
-  { name: 'forest',   test: (h) => h > 0.05,             color: '#4a7a3b' },
-  { name: 'hills',    test: (_h, s) => s < 0.2,          color: '#8a9a5c' },
-  { name: 'highland', test: (h) => h > 0.3,               color: '#7a8a4c' },
-  { name: 'mountain', test: (_h, s) => s < 0.4,          color: '#8b7b5a' },
-  { name: 'peak',     test: (_h, s) => s >= 0.4,          color: '#9a8a7a' },
-  { name: 'snow',     test: (h) => h > 0.5,               color: '#d8dce0' },
+const TERRAIN: Array<{ name: string; test: (h: number, s: number, m: number) => boolean; color: string }> = [
+  { name: 'ocean',      test: (h) => h < -0.35,                   color: '#1a3050' },
+  { name: 'deepwater',  test: (h) => h < -0.20,                   color: '#2a5580' },
+  { name: 'water',      test: (h) => h < -0.08,                   color: '#4a80aa' },
+  { name: 'beach',      test: (h) => h < -0.02,                   color: '#c8b888' },
+  { name: 'plains',     test: (_h, _s, m) => m < 0.4,            color: '#8ab860' },
+  { name: 'grassland',  test: (_h, _s, m) => m < 0.7,             color: '#72a84e' },
+  { name: 'forest',     test: (_h, _s, _m) => true,               color: '#4a8a38' },
+  { name: 'denseforest',test: (h, _s, m) => h > 0.1 && m > 0.6,  color: '#307028' },
+  { name: 'hills',      test: (_h, s) => s > 0.12,                color: '#7a9a50' },
+  { name: 'highland',   test: (h) => h > 0.25,                    color: '#6a8a40' },
+  { name: 'rock',       test: (h, s) => h > 0.3 || s > 0.25,    color: '#8a7a60' },
+  { name: 'mountain',   test: (_h, s) => s > 0.30,                color: '#7a6a50' },
+  { name: 'peak',       test: (h) => h > 0.45,                    color: '#9a8a78' },
+  { name: 'snow',       test: (h) => h > 0.55,                    color: '#d0d4d8' },
 ];
 
-export function sampleTerrain(x: number, y: number, seed = 42): TerrainSample {
-  const perm = buildPermutation(seed);
-  // Lower frequency = larger terrain features
-  const scale = 0.0005; // 1 noise unit per 2km
-  const nx = x * scale;
-  const ny = y * scale;
+let noise2D: ReturnType<typeof createNoise2D> | null = null;
 
-  // Height from 6-octave noise
-  const height = octaveNoise(nx, ny, 6, perm);
+function getNoise(): ReturnType<typeof createNoise2D> {
+  if (!noise2D) noise2D = createNoise2D();
+  return noise2D;
+}
 
-  // Slope from 2nd octave for smoother slope
-  const eps = 0.005;
-  const dx = octaveNoise(nx + eps, ny, 4, perm);
-  const dy = octaveNoise(nx, ny + eps, 4, perm);
-  const slope = Math.min(1, Math.sqrt((dx - height) ** 2 + (dy - height) ** 2) / eps * 2);
+export function sampleTerrain(x: number, y: number): TerrainSample {
+  const n = getNoise();
+  const s = 0.00025; // base scale — 1 unit per 4km
 
-  const type = TERRAIN_TYPES.find((t) => t.test(height, slope))?.name ?? 'plains';
+  // Elevation: 4 octaves
+  const e0 = n(x * s, y * s);
+  const e1 = n(x * s * 2, y * s * 2) * 0.5;
+  const e2 = n(x * s * 4, y * s * 4) * 0.25;
+  const e3 = n(x * s * 8, y * s * 8) * 0.125;
+  const height = e0 + e1 + e2 + e3;
+
+  // Moisture: separate noise (offset coords for different pattern)
+  const m0 = n(x * s * 0.5 + 1000, y * s * 0.5 + 1000);
+  const m1 = n(x * s * 2 + 1000, y * s * 2 + 1000) * 0.5;
+  const moisture = (m0 + m1 + 1.5) / 3; // normalize to ~0-1
+
+  // Slope
+  const eps = 0.001 / s;
+  const dx = n((x + eps) * s, y * s);
+  const dy = n(x * s, (y + eps) * s);
+  const slope = Math.min(1, Math.sqrt((dx - e0) ** 2 + (dy - e0) ** 2) / s / 5);
+
+  const type = TERRAIN.find((t) => t.test(height, slope, moisture))?.name ?? 'plains';
   return { height, type, slope };
 }
 
 export function getTerrainColor(type: string): string {
-  return TERRAIN_TYPES.find((t) => t.name === type)?.color ?? '#8fbc6a';
+  return TERRAIN.find((t) => t.name === type)?.color ?? '#8ab860';
 }
-
-export { buildPermutation, octaveNoise };

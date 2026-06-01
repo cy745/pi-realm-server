@@ -10,7 +10,7 @@ interface CD { id: string; name: string; type: string; x: number; y: number; }
 interface Props { locations: LM[]; characters: CD[]; centerX?: number; centerY?: number; className?: string; }
 
 // All in one coordinate system: 1 world meter = PPM * zoom screen pixels
-const PPM = 0.5; // pixels per world meter (at zoom=1)
+const PPM = 2; // pixels per world meter (at zoom=1) — higher = sharper
 
 export function TerrainMap({ locations, characters, centerX = 500, centerY = 800, className = '' }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -145,12 +145,13 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     const ty = (wy: number) => wy - minY;
 
     // ── Terrain tiles ────────────────────────────────
-    const tileSize = Math.max(10, Math.round(20 / Math.max(zoom, 0.1)));
+    // Adaptive tile size: smaller at high zoom (detail), larger at low zoom (coverage)
+    const tileSize = Math.max(5, Math.round(12 / Math.max(zoom, 0.05)));
     const startTx = Math.floor(minX / tileSize) * tileSize;
     const startTy = Math.floor(minY / tileSize) * tileSize;
     const cols = Math.ceil((maxX - startTx) / tileSize) + 1;
     const rows = Math.ceil((maxY - startTy) / tileSize) + 1;
-    const maxTiles = 3000;
+    const maxTiles = 5000;
 
     if (cols * rows <= maxTiles) {
       for (let c = 0; c < cols; c++) {
@@ -162,8 +163,8 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
         }
       }
     } else {
-      // Downsample: skip tiles to stay under limit
-      const skip = Math.ceil(Math.sqrt(cols * rows / maxTiles));
+      // Downsample: skip tiles to stay under limit (keep it smooth)
+      const skip = Math.max(1, Math.round(Math.sqrt(cols * rows / maxTiles)));
       for (let c = 0; c < cols; c += skip) {
         for (let r = 0; r < rows; r += skip) {
           const wx = startTx + c * tileSize;
