@@ -148,55 +148,62 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     const minX = vx - halfW;
     const minY = vy - halfH;
 
-    // ── Terrain texture regeneration ──────────────
-    const rebuildThreshW = halfW * 0.5;
-    const rebuildThreshH = halfH * 0.5;
-    const needRebuild = Math.abs(vx - s.texCX) > rebuildThreshW || Math.abs(vy - s.texCY) > rebuildThreshH;
+    // ── Fixed-size terrain texture ────────────────
+    // At low zoom: 2048px covers wide area; at high zoom: 512px is enough
+    const TEX_SIZE = zoom < 0.5 ? 2048 : zoom < 1 ? 1024 : 512;
+    const texWorldW = TEX_SIZE / WPX; // world meters the texture covers
+    const texWorldH = TEX_SIZE / WPX;
+    const rebuildThresh = texWorldW * 0.3;
+    const needRebuild = Math.sqrt((vx - s.texCX) ** 2 + (vy - s.texCY) ** 2) > rebuildThresh;
 
     if (needRebuild) {
-      // Remove old sprite
       if (s.sprite) { tc.removeChild(s.sprite); s.sprite.destroy(); s.sprite = null; }
 
-      // Build texture covering 2x viewport
-      const texW = Math.max(1, Math.round(w / zoom / WPX));
-      const texH = Math.max(1, Math.round(h / zoom / WPX));
-      const texCX = vx;
-      const texCY = vy;
-      const texStartX = texCX - texW / 2;
-      const texStartY = texCY - texH / 2;
+      // Build fixed-size texture centered on current view
+      const texStartX = vx - texWorldW / 2;
+      const texStartY = vy - texWorldH / 2;
 
+      // Canvas: 1 pixel = 1 tile
+      const TILE_SIZE = WPX; // world units per pixel on canvas = meters per tile
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(texW / TILE_W * TILE_P));
-      canvas.height = Math.max(1, Math.round(texH / TILE_W * TILE_P));
+      canvas.width = TEX_SIZE;
+      canvas.height = TEX_SIZE;
       const ctx = canvas.getContext('2d')!;
-      const worldPerPix = TILE_W / TILE_P;
+      const imageData = ctx.createImageData(TEX_SIZE, TEX_SIZE);
+      const data = imageData.data;
 
-      for (let px = 0; px < canvas.width; px++) {
-        for (let py = 0; py < canvas.height; py++) {
-          const wx = texStartX + px * worldPerPix;
-          const wy = texStartY + py * worldPerPix;
-          ctx.fillStyle = getTerrainColor(sampleTerrain(wx, wy).type);
-          ctx.fillRect(px, py, 1, 1);
+      // Batch fill via ImageData — much faster than fillRect per tile
+      for (let py = 0; py < TEX_SIZE; py++) {
+        for (let px = 0; px < TEX_SIZE; px++) {
+          const wx = texStartX + px * TILE_SIZE;
+          const wy = texStartY + py * TILE_SIZE;
+          const color = getTerrainColor(sampleTerrain(wx, wy).type);
+          const i = (py * TEX_SIZE + px) * 4;
+          data[i] = parseInt(color.slice(1, 3), 16);     // R
+          data[i + 1] = parseInt(color.slice(3, 5), 16);   // G
+          data[i + 2] = parseInt(color.slice(5, 7), 16);   // B
+          data[i + 3] = 255;                               // A
         }
       }
+      ctx.putImageData(imageData, 0, 0);
 
       const texture = Texture.from(canvas);
       const sprite = new Sprite(texture);
 
-      // Position sprite so its origin (texStartX, texStartY) aligns with world origin
-      sprite.x = -(vx - texW / 2); // position in world coords relative to container origin
-      sprite.y = -(vy - texH / 2);
+      // Sprite: position so its (texStartX, texStartY) aligns with world origin
+      sprite.x = -(vx - texWorldW / 2);
+      sprite.y = -(vy - texWorldH / 2);
       sprite.scale.set(WPX);
 
       tc.addChild(sprite);
       s.sprite = sprite;
-      s.texCX = texCX;
-      s.texCY = texCY;
+      s.texCX = vx;
+      s.texCY = vy;
     } else {
-      // Update existing sprite position
+      // Update existing sprite position to follow view
       if (s.sprite) {
-        s.sprite.x = -(vx - halfW * 2 * 0.5); // Keep centered
-        s.sprite.y = -(vy - halfH * 2 * 0.5);
+        s.sprite.x = -(vx - texWorldW / 2);
+        s.sprite.y = -(vy - texWorldH / 2);
       }
     }
 
