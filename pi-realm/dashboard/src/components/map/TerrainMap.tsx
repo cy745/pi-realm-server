@@ -1,8 +1,13 @@
-// Terrain Map — optimized 2D map with drag/zoom + tile cache + ImageData batch render
+// Terrain Map — offscreen canvas terrain layer + 10m tiles
+// Drag: only repaints overlay (chars + locations), terrain is shifted
+// Zoom: re-renders everything at new resolution
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sampleTerrain, getTerrainColor } from './perlin.ts';
 import Stats from 'stats.js';
+
+const TILE_WORLD = 10; // 10m per tile
+const TILE_PX_BASE = 8; // pixels per tile at zoom=1
 
 interface LocationMarker {
   id: string;
@@ -32,44 +37,72 @@ interface TerrainMapProps {
 
 // ── Tile Cache ────────────────────────────────────
 
-const tileCache = new Map<string, string>();
-const MAX_CACHE = 5000;
+const tileCache = new Map<number, string>();
+const MAX_CACHE = 20000;
 
-function getTile(wx: number, wy: number, worldStep: number): string {
-  const key = `${Math.floor(wx / worldStep)},${Math.floor(wy / worldStep)}`;
+function getTileColor(wx: number, wy: number): string {
+  const key = Math.floor(wx / TILE_WORLD) * 100003 + Math.floor(wy / TILE_WORLD);
   let color = tileCache.get(key);
   if (!color) {
-    color = getTerrainColor(sampleTerrain(wx + worldStep / 2, wy + worldStep / 2).type);
+    color = getTerrainColor(sampleTerrain(wx + TILE_WORLD / 2, wy + TILE_WORLD / 2).type);
     tileCache.set(key, color);
     if (tileCache.size > MAX_CACHE) {
       const first = tileCache.keys().next().value;
-      if (first) tileCache.delete(first);
+      if (first !== undefined) tileCache.delete(first);
     }
   }
   return color;
+}
+
+// Invalidate cache when zoom changes (terrain visualization may change)
+let lastZoom = 0;
+function invalidateCacheOnZoom(zoom: number): boolean {
+  const tilePx = Math.max(4, TILE_PX_BASE * zoom);
+  if (Math.abs(tilePx - lastZoom) > 2) {
+    lastZoom = tilePx;
+    return true; // zoom changed significantly
+  }
+  return false;
+}
+
+// ── Offscreen Canvas Pool ─────────────────────────
+
+let terrainOffscreen: HTMLCanvasElement | null = null;
+let terrainCtx: CanvasRenderingContext2D | null = null;
+let terrainKey = '';
+
+function getTerrainCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  if (!terrainOffscreen || terrainOffscreen.width !== w || terrainOffscreen.height !== h) {
+    terrainOffscreen = document.createElement('canvas');
+    terrainOffscreen.width = w;
+    terrainOffscreen.height = h;
+    terrainCtx = terrainOffscreen.getContext('2d');
+  }
+  return [terrainOffscreen, terrainCtx!];
 }
 
 export function TerrainMap({ locations, characters, centerX = 500, centerY = 800, className = '' }: TerrainMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef({ x: centerX, y: centerY, zoom: 1 });
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.2); // start zoomed out
   const [viewCenter, setViewCenter] = useState({ x: centerX, y: centerY });
   const [dims, setDims] = useState({ w: 800, h: 600 });
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const renderPending = useRef(0);
   const statsRef = useRef<Stats | null>(null);
+  const needsTerrainRebuild = useRef(true);
+  const prevViewRef = useRef({ x: centerX, y: centerY, zoom: 0.2 });
 
   // Track container size + init Stats.js
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    // Init Stats (FPS monitor, top-left)
     if (!statsRef.current) {
       const stats = new Stats();
-      stats.showPanel(0); // 0=fps, 1=ms, 2=memory
+      stats.showPanel(0);
       stats.dom.style.position = 'absolute';
       stats.dom.style.top = '0';
       stats.dom.style.left = '0';
@@ -108,14 +141,15 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     const dx = e.clientX - dragStart.current.x;
     const dy = e.clientY - dragStart.current.y;
     dragStart.current = { x: e.clientX, y: e.clientY };
-    const worldPerPx = 200 / (8 * viewRef.current.zoom);
+    const tilePx = Math.max(4, TILE_PX_BASE * viewRef.current.zoom);
+    const worldPerPx = TILE_WORLD / tilePx;
     setViewCenter((v) => ({ x: v.x - dx * worldPerPx, y: v.y - dy * worldPerPx }));
   }, []);
 
   const onMouseUp = useCallback(() => { isDragging.current = false; }, []);
   const onMouseLeave = useCallback(() => { isDragging.current = false; }, []);
 
-  // ── Wheel zoom (non-passive, prevents page scroll) ──
+  // ── Wheel zoom (non-passive) ────────────────────
 
   useEffect(() => {
     const el = containerRef.current;
@@ -123,13 +157,50 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     const handler = (e: WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.85 : 1.18;
-      setZoom((z) => Math.max(0.1, Math.min(50, z * factor)));
+      setZoom((z) => Math.max(0.02, Math.min(50, z * factor)));
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
   }, []);
 
-  // ── Main render ─────────────────────────────────
+  // ── Draw terrain to offscreen canvas ────────────
+
+  const buildTerrain = useCallback((w: number, h: number, cx: number, cy: number, z: number) => {
+    const tilePx = Math.max(4, TILE_PX_BASE * z);
+    const worldPerPx = TILE_WORLD / tilePx;
+    const halfW = (w / 2) * worldPerPx;
+    const halfH = (h / 2) * worldPerPx;
+    const minX = cx - halfW;
+    const maxX = cx + halfW;
+    const minY = cy - halfH;
+    const maxY = cy + halfH;
+
+    const [offCanvas, offCtx] = getTerrainCanvas(w, h);
+
+    // Clear
+    offCtx.fillStyle = '#1a3a5c'; // ocean default
+    offCtx.fillRect(0, 0, w, h);
+
+    const cols = Math.ceil(w / tilePx) + 4;
+    const rows = Math.ceil(h / tilePx) + 4;
+    const startTx = Math.floor(minX / TILE_WORLD) * TILE_WORLD;
+    const startTy = Math.floor(minY / TILE_WORLD) * TILE_WORLD;
+
+    for (let col = 0; col < cols; col++) {
+      for (let row = 0; row < rows; row++) {
+        const wx = startTx + col * TILE_WORLD;
+        const wy = startTy + row * TILE_WORLD;
+        const px = (wx - minX) / worldPerPx;
+        const py = (wy - minY) / worldPerPx;
+        offCtx.fillStyle = getTileColor(wx, wy);
+        offCtx.fillRect(px, py, tilePx + 0.5, tilePx + 0.5);
+      }
+    }
+
+    return { offCanvas, worldPerPx, minX, minY, tilePx };
+  }, []);
+
+  // ── Full draw ───────────────────────────────────
 
   const draw = useCallback(() => {
     const stats = statsRef.current;
@@ -148,66 +219,84 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     const z = viewRef.current.zoom;
     const cx = viewRef.current.x;
     const cy = viewRef.current.y;
+    const prev = prevViewRef.current;
+    const zoomChanged = Math.abs(z - prev.zoom) > 0.01;
+    const panned = Math.abs(cx - prev.x) > 0.1 || Math.abs(cy - prev.y) > 0.1;
 
-    const tileWorld = 200;
-    const tilePx = Math.max(1, 8 * z); // adaptive: larger at high zoom
-    const worldPerPx = tileWorld / tilePx;
+    if (!panned && !zoomChanged) {
+      if (stats) stats.end();
+      return; // nothing changed
+    }
+    prevViewRef.current = { x: cx, y: cy, zoom: z };
+
+    // Build terrain layer (only on zoom change or first paint)
+    if (zoomChanged || needsTerrainRebuild.current) {
+      const result = buildTerrain(w, h, cx, cy, z);
+      needsTerrainRebuild.current = false;
+      // Draw terrain offscreen to main canvas
+      ctx.drawImage(result.offCanvas, 0, 0);
+    } else {
+      // Panning: rebuild terrain (simple for now — could optimize with shift)
+      const result = buildTerrain(w, h, cx, cy, z);
+      ctx.drawImage(result.offCanvas, 0, 0);
+    }
+
+    const tilePx = Math.max(4, TILE_PX_BASE * z);
+    const worldPerPx = TILE_WORLD / tilePx;
     const halfW = (w / 2) * worldPerPx;
     const halfH = (h / 2) * worldPerPx;
     const minX = cx - halfW;
-    const maxX = cx + halfW;
     const minY = cy - halfH;
+    const maxX = cx + halfW;
     const maxY = cy + halfH;
 
-    // ── 1. Draw terrain via ImageData ──────────────
-    const stepPx = tilePx;
-    const cols = Math.ceil(w / stepPx) + 2;
-    const rows = Math.ceil(h / stepPx) + 2;
-    const startTileX = Math.floor(minX / tileWorld) * tileWorld;
-    const startTileY = Math.floor(minY / tileWorld) * tileWorld;
-
-    for (let col = 0; col < cols; col++) {
-      for (let row = 0; row < rows; row++) {
-        const wx = startTileX + col * tileWorld;
-        const wy = startTileY + row * tileWorld;
-        const px = (wx - minX) / worldPerPx;
-        const py = (wy - minY) / worldPerPx;
-        const color = getTile(wx, wy, tileWorld);
-        ctx.fillStyle = color;
-        ctx.fillRect(px, py, stepPx + 0.5, stepPx + 0.5);
-      }
-    }
-
-    // ── 2. Grid lines (every 1km) ────────────────
-    ctx.strokeStyle = 'rgba(0,0,0,0.06)';
-    ctx.lineWidth = 1;
-    const gridStep = 1000;
+    // ── Grid lines (only if spacing > 8px) ───────
+    const gridStep = 100;
     const gsPx = gridStep / worldPerPx;
-    const gStartX = Math.floor(minX / gridStep) * gridStep;
-    const gStartY = Math.floor(minY / gridStep) * gridStep;
-
-    // Only draw grid if spacing > 4px
-    if (gsPx > 4) {
+    if (gsPx > 8) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.04)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let gx = gStartX; gx <= maxX; gx += gridStep) {
+      const gsx = Math.floor(minX / gridStep) * gridStep;
+      const gsy = Math.floor(minY / gridStep) * gridStep;
+      for (let gx = gsx; gx <= maxX; gx += gridStep) {
         const px = (gx - minX) / worldPerPx;
         ctx.moveTo(px, 0); ctx.lineTo(px, h);
       }
-      for (let gy = gStartY; gy <= maxY; gy += gridStep) {
+      for (let gy = gsy; gy <= maxY; gy += gridStep) {
         const py = (gy - minY) / worldPerPx;
         ctx.moveTo(0, py); ctx.lineTo(w, py);
       }
       ctx.stroke();
     }
 
-    // ── 3. Locations ───────────────────────────────
-    // Sort: region/continent first (drawn behind), building/room last (on top)
-    const sortedLocations = [...locations].sort((a, b) =>
-      (a.type === 'region' || a.type === 'continent' ? 0 : 1) -
-      (b.type === 'region' || b.type === 'continent' ? 0 : 1),
+    // ── 1km bold grid ────────────────────────────
+    const bigGrid = 1000;
+    const bgPx = bigGrid / worldPerPx;
+    if (bgPx > 4) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const bgsx = Math.floor(minX / bigGrid) * bigGrid;
+      const bgsy = Math.floor(minY / bigGrid) * bigGrid;
+      for (let gx = bgsx; gx <= maxX; gx += bigGrid) {
+        const px = (gx - minX) / worldPerPx;
+        ctx.moveTo(px, 0); ctx.lineTo(px, h);
+      }
+      for (let gy = bgsy; gy <= maxY; gy += bigGrid) {
+        const py = (gy - minY) / worldPerPx;
+        ctx.moveTo(0, py); ctx.lineTo(w, py);
+      }
+      ctx.stroke();
+    }
+
+    // ── Locations ────────────────────────────────
+    const sortedLocs = [...locations].sort((a, b) =>
+      ((a.type === 'region' || a.type === 'continent') ? 0 : 1) -
+      ((b.type === 'region' || b.type === 'continent') ? 0 : 1),
     );
 
-    for (const loc of sortedLocations) {
+    for (const loc of sortedLocs) {
       const lx = (loc.x - loc.w / 2 - minX) / worldPerPx;
       const ly = (loc.y - loc.h / 2 - minY) / worldPerPx;
       const lw = loc.w / worldPerPx;
@@ -215,49 +304,45 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
 
       if (lx + lw < -50 || lx > w + 50 || ly + lh < -50 || ly > h + 50) continue;
 
-      // Only draw rectangles when visible
       if (lw > 2) {
         ctx.strokeStyle =
-          loc.type === 'room' ? 'rgba(255,200,50,0.5)' :
-          loc.type === 'building' ? 'rgba(255,200,50,0.7)' :
-          loc.type === 'town' ? 'rgba(255,255,255,0.9)' :
-          loc.type === 'region' ? 'rgba(255,255,255,0.3)' :
-          'rgba(200,200,200,0.5)';
-        ctx.lineWidth = loc.type === 'region' ? 1 : loc.type === 'town' ? 2 : 1.5;
-        ctx.setLineDash(loc.type === 'region' || loc.type === 'continent' ? [6, 4] : []);
+          loc.type === 'room' ? 'rgba(255,200,50,0.4)' :
+          loc.type === 'building' ? 'rgba(255,200,50,0.6)' :
+          loc.type === 'town' ? 'rgba(255,255,255,0.8)' :
+          loc.type === 'region' ? 'rgba(255,255,255,0.25)' :
+          'rgba(200,200,200,0.4)';
+        ctx.lineWidth = loc.type === 'region' ? 1 : loc.type === 'town' ? 1.5 : 1;
+        ctx.setLineDash(loc.type === 'region' || loc.type === 'continent' ? [4, 3] : []);
         ctx.strokeRect(lx, ly, lw, lh);
         ctx.setLineDash([]);
       }
 
-      // Label (only if big enough)
       if (lw > 30 && lh > 8) {
-        const fontSize = Math.max(9, Math.min(14, lw / 8));
+        const fontSize = Math.max(9, Math.min(13, lw / 10));
         ctx.font = `600 ${fontSize}px "Fira Sans", sans-serif`;
-        ctx.fillStyle = loc.type === 'town' ? '#ffffff' : loc.type === 'region' ? 'rgba(255,255,255,0.7)' : 'rgba(255,220,100,0.9)';
-        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.fillStyle = loc.type === 'town' ? '#ffffff' : loc.type === 'region' ? 'rgba(255,255,255,0.6)' : 'rgba(255,220,100,0.8)';
+        ctx.shadowColor = 'rgba(0,0,0,0.7)';
         ctx.shadowBlur = 3;
         ctx.textBaseline = 'top';
-        ctx.fillText(loc.name, lx + 3, ly + 3);
+        ctx.fillText(loc.name, lx + 2, ly + 2);
         ctx.shadowBlur = 0;
       }
     }
 
-    // ── 4. Characters ──────────────────────────────
+    // ── Characters ──────────────────────────────
     for (const ch of characters) {
       const cx2 = (ch.x - minX) / worldPerPx;
       const cy2 = (ch.y - minY) / worldPerPx;
       if (cx2 < -20 || cx2 > w + 20 || cy2 < -20 || cy2 > h + 20) continue;
 
-      const radius = ch.type === 'player' ? 6 : 5;
+      const radius = ch.type === 'player' ? 5 : 4;
       const color = ch.type === 'player' ? '#A855F7' : '#22C55E';
 
-      // Glow
       ctx.beginPath();
-      ctx.arc(cx2, cy2, radius + 3, 0, Math.PI * 2);
+      ctx.arc(cx2, cy2, radius + 2, 0, Math.PI * 2);
       ctx.fillStyle = color + '30';
       ctx.fill();
 
-      // Dot
       ctx.beginPath();
       ctx.arc(cx2, cy2, radius, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -266,47 +351,38 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Label
       ctx.font = '600 10px "Fira Sans", sans-serif';
       ctx.fillStyle = '#ffffff';
       ctx.textBaseline = 'bottom';
       ctx.shadowColor = 'rgba(0,0,0,0.8)';
       ctx.shadowBlur = 3;
-      ctx.fillText(ch.name, cx2 + 10, cy2 - 5);
+      ctx.fillText(ch.name, cx2 + 8, cy2 - 4);
       ctx.shadowBlur = 0;
     }
 
-    // ── 5. Scale bar ──────────────────────────────
-    const barMeters = z > 2 ? 100 : z > 0.5 ? 500 : 1000;
+    // ── Scale bar ──────────────────────────────
+    const barMeters = z > 4 ? 50 : z > 1 ? 100 : 500;
     const barPx = barMeters / worldPerPx;
-    const barY = h - 30;
+    const barY = h - 28;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(12, barY - 8, barPx + 8, 20);
+    ctx.fillRect(10, barY - 6, barPx + 6, 16);
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(16, barY); ctx.lineTo(16 + barPx, barY); ctx.stroke();
+    ctx.moveTo(13, barY); ctx.lineTo(13 + barPx, barY); ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(16, barY - 4); ctx.lineTo(16, barY + 4); ctx.stroke();
+    ctx.moveTo(13, barY - 3); ctx.lineTo(13, barY + 3); ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(16 + barPx, barY - 4); ctx.lineTo(16 + barPx, barY + 4); ctx.stroke();
-    ctx.font = '10px "Fira Code", monospace';
+    ctx.moveTo(13 + barPx, barY - 3); ctx.lineTo(13 + barPx, barY + 3); ctx.stroke();
+    ctx.font = '9px "Fira Code", monospace';
     ctx.fillStyle = '#ffffff';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${barMeters >= 1000 ? `${barMeters / 1000}km` : `${barMeters}m`}`, 20, barY);
-
-    // ── 6. Center crosshair ───────────────────────
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(w / 2 - 10, h / 2); ctx.lineTo(w / 2 + 10, h / 2);
-    ctx.moveTo(w / 2, h / 2 - 10); ctx.lineTo(w / 2, h / 2 + 10);
-    ctx.stroke();
+    ctx.fillText(`${barMeters >= 1000 ? `${barMeters / 1000}km` : `${barMeters}m`}`, 16, barY);
 
     if (stats) stats.end();
-  }, [locations, characters, dims]);
+  }, [locations, characters, dims, buildTerrain]);
 
-  // ── Throttled render via rAF ────────────────────
+  // ── rAF render loop ────────────────────────────
 
   useEffect(() => {
     viewRef.current = { x: viewCenter.x, y: viewCenter.y, zoom };
@@ -320,12 +396,12 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     };
   }, [viewCenter, zoom, draw]);
 
-  // ── Keyboard shortcuts ──────────────────────────
+  // ── Keyboard ──────────────────────────────────
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === '+' || e.key === '=') setZoom((z) => Math.min(50, z * 1.2));
-      if (e.key === '-') setZoom((z) => Math.max(0.1, z / 1.2));
+      if (e.key === '-') setZoom((z) => Math.max(0.02, z / 1.2));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -347,23 +423,21 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
         onMouseLeave={onMouseLeave}
       />
 
-      {/* Controls overlay */}
       <div className="absolute top-3 right-3 flex flex-col gap-1">
         <button type="button" onClick={() => setZoom((z) => Math.min(50, z * 1.3))}
-          className="w-8 h-8 bg-white/10 hover:bg-white/20 text-white font-mono text-sm rounded-sm cursor-pointer transition-colors" aria-label="Zoom in">+</button>
-        <button type="button" onClick={() => setZoom((z) => Math.max(0.1, z / 1.3))}
-          className="w-8 h-8 bg-white/10 hover:bg-white/20 text-white font-mono text-sm rounded-sm cursor-pointer transition-colors" aria-label="Zoom out">−</button>
-        <button type="button" onClick={() => { setZoom(1); setViewCenter({ x: centerX, y: centerY }); }}
-          className="w-8 h-8 bg-white/10 hover:bg-white/20 text-white font-mono text-xs rounded-sm cursor-pointer transition-colors" aria-label="Reset view">⟲</button>
+          className="w-7 h-7 bg-white/10 hover:bg-white/20 text-white font-mono text-xs rounded-sm cursor-pointer transition-colors" aria-label="Zoom in">+</button>
+        <button type="button" onClick={() => setZoom((z) => Math.max(0.02, z / 1.3))}
+          className="w-7 h-7 bg-white/10 hover:bg-white/20 text-white font-mono text-xs rounded-sm cursor-pointer transition-colors" aria-label="Zoom out">−</button>
+        <button type="button" onClick={() => { needsTerrainRebuild.current = true; setZoom(0.2); setViewCenter({ x: centerX, y: centerY }); }}
+          className="w-7 h-7 bg-white/10 hover:bg-white/20 text-white font-mono text-xs rounded-sm cursor-pointer transition-colors" aria-label="Reset view">⟲</button>
       </div>
 
-      {/* Info bar */}
-      <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between pointer-events-none">
-        <div className="bg-black/50 text-white/80 text-[10px] font-mono px-2 py-1 rounded-sm selection:bg-transparent">
-          ({viewCenter.x.toFixed(0)}, {viewCenter.y.toFixed(0)}) · {zoom.toFixed(1)}×
+      <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
+        <div className="bg-black/50 text-white/70 text-[9px] font-mono px-1.5 py-0.5 rounded-sm selection:bg-transparent">
+          ({viewCenter.x.toFixed(0)}, {viewCenter.y.toFixed(0)}) · {zoom.toFixed(2)}×
         </div>
-        <div className="bg-black/50 text-white/60 text-[10px] font-mono px-2 py-1 rounded-sm selection:bg-transparent">
-          {characters.length} chars · {locations.length} locations
+        <div className="bg-black/50 text-white/50 text-[9px] font-mono px-1.5 py-0.5 rounded-sm selection:bg-transparent">
+          10m/tile
         </div>
       </div>
     </div>
