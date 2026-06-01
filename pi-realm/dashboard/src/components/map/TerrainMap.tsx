@@ -73,7 +73,8 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       stats.dom.style.position = 'absolute';
       stats.dom.style.top = '0';
       stats.dom.style.left = '0';
-      stats.dom.style.zIndex = '10';
+      stats.dom.style.zIndex = '1';
+      stats.dom.style.pointerEvents = 'none';
       stats.dom.style.opacity = '0.7';
       el.appendChild(stats.dom);
       statsRef.current = stats;
