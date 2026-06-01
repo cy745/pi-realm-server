@@ -219,27 +219,13 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     const z = viewRef.current.zoom;
     const cx = viewRef.current.x;
     const cy = viewRef.current.y;
-    const prev = prevViewRef.current;
-    const zoomChanged = Math.abs(z - prev.zoom) > 0.01;
-    const panned = Math.abs(cx - prev.x) > 0.1 || Math.abs(cy - prev.y) > 0.1;
 
-    if (!panned && !zoomChanged) {
-      if (stats) stats.end();
-      return; // nothing changed
-    }
+    // Always rebuild terrain to offscreen canvas then blit to main canvas.
+    // tile cache makes subsequent renders fast after first full paint.
+    const result = buildTerrain(w, h, cx, cy, z);
+    ctx.drawImage(result.offCanvas, 0, 0);
+    needsTerrainRebuild.current = false;
     prevViewRef.current = { x: cx, y: cy, zoom: z };
-
-    // Build terrain layer (only on zoom change or first paint)
-    if (zoomChanged || needsTerrainRebuild.current) {
-      const result = buildTerrain(w, h, cx, cy, z);
-      needsTerrainRebuild.current = false;
-      // Draw terrain offscreen to main canvas
-      ctx.drawImage(result.offCanvas, 0, 0);
-    } else {
-      // Panning: rebuild terrain (simple for now — could optimize with shift)
-      const result = buildTerrain(w, h, cx, cy, z);
-      ctx.drawImage(result.offCanvas, 0, 0);
-    }
 
     const tilePx = Math.max(4, TILE_PX_BASE * z);
     const worldPerPx = TILE_WORLD / tilePx;
