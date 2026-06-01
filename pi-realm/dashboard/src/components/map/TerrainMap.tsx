@@ -12,6 +12,11 @@ const TILE = 20; // world meters per tile
 
 export function TerrainMap({ locations, characters, centerX = 500, centerY = 800, className = '' }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const locRef = useRef(locations);
+  const charRef = useRef(characters);
+  locRef.current = locations;
+  charRef.current = characters;
+
   const state = useRef({
     vx: centerX, vy: centerY, zoom: 0.3,
     w: 800, h: 500,
@@ -108,7 +113,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     }
 
     // ── Locations ──────────────────────────────────
-    const sorted = [...locations].sort((a, b) =>
+    const sorted = [...locRef.current].sort((a, b) =>
       ((a.type === 'region' || a.type === 'continent') ? 1 : 0) -
       ((b.type === 'region' || b.type === 'continent') ? 1 : 0));
     for (const loc of sorted) {
@@ -136,7 +141,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     }
 
     // ── Characters ──────────────────────────────────
-    for (const ch of characters) {
+    for (const ch of charRef.current) {
       const cx = toScreenX(ch.x);
       const cy = toScreenY(ch.y);
       if (cx < -20 || cx > w + 20 || cy < -20 || cy > h + 20) continue;
@@ -226,7 +231,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       state.current.vx = state.current.dvx - (e.clientX - state.current.dx) * wpPx;
       state.current.vy = state.current.dvy - (e.clientY - state.current.dy) * wpPx;
       if (paintReq.current) cancelAnimationFrame(paintReq.current);
-      paintReq.current = requestAnimationFrame(() => { paintReq.current = 0; paint(); });
+      paintReq.current = requestAnimationFrame(() => { paintReq.current = 0; try { paint(); } catch (e) { console.error('[map] paint error', e); } });
     };
 
     const onUp = () => { state.current.drag = false; };
@@ -240,7 +245,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       e.preventDefault();
       state.current.zoom = Math.max(0.02, Math.min(50, state.current.zoom * (e.deltaY > 0 ? 0.85 : 1.18)));
       if (paintReq.current) cancelAnimationFrame(paintReq.current);
-      paintReq.current = requestAnimationFrame(() => { paintReq.current = 0; paint(); });
+      paintReq.current = requestAnimationFrame(() => { paintReq.current = 0; try { paint(); } catch (e) { console.error('[map] wheel error', e); } });
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
 
