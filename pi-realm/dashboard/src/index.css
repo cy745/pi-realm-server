@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-ink-50 text-ink-900 font-sans;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+
+  /* Subtle focus ring - minimalism */
+  *:focus-visible {
+    @apply outline-none ring-1 ring-accent-500 ring-offset-1 ring-offset-ink-50;
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-white border border-ink-200 rounded-sm;
+  }
+
+  .panel-header {
+    @apply px-5 py-3 border-b border-ink-100 flex items-center justify-between;
+  }
+
+  .panel-body {
+    @apply p-5;
+  }
+
+  .stat-value {
+    @apply font-mono text-2xl font-semibold text-ink-900 tabular-nums;
+  }
+
+  .stat-label {
+    @apply text-xs uppercase tracking-wider text-ink-500 font-medium;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2 text-sm text-ink-600 rounded-sm transition-colors duration-150 cursor-pointer hover:bg-ink-100 hover:text-ink-900;
+  }
+
+  .nav-item-active {
+    @apply bg-ink-900 text-ink-50 hover:bg-ink-900 hover:text-ink-50;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-mono font-medium rounded-sm;
+  }
+
+  .badge-online {
+    @apply bg-status-online/10 text-status-online;
+  }
+  .badge-idle {
+    @apply bg-status-idle/10 text-status-idle;
+  }
+  .badge-error {
+    @apply bg-status-error/10 text-status-error;
+  }
+  .badge-offline {
+    @apply bg-ink-100 text-ink-500;
+  }
+}
