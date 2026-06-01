@@ -1,31 +1,36 @@
 // Pi Realm Server Entrypoint
-// Express + WebSocket server for development and production
+// Express + WebSocket + Game Engine
 
 import express from 'express';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
+import { GameEngine } from './game/engine.ts';
 
 const PORT = parseInt(process.env['PORT'] ?? '3001', 10);
 const HOST = process.env['HOST'] ?? '0.0.0.0';
+const TICK_INTERVAL = parseInt(process.env['TICK_INTERVAL'] ?? '30000', 10); // 30s for dev
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check
+// ── Game Engine ─────────────────────────────────────
+
+const engine = new GameEngine();
+engine.startLoop(TICK_INTERVAL);
+
+// ── HTTP API ────────────────────────────────────────
+
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     version: '0.1.0',
     uptime: process.uptime(),
-    modules: {
-      built: new Date().toISOString(),
-    },
+    modules: { built: new Date().toISOString() },
   });
 });
 
-// System status
 app.get('/api/status', (_req, res) => {
   res.json({
     server: {
@@ -34,10 +39,10 @@ app.get('/api/status', (_req, res) => {
       node: process.version,
     },
     world: {
-      rooms: 0,
-      characters: 0,
-      tick: 0,
-      gameTime: 0,
+      rooms: engine.rooms.size,
+      characters: engine.characters.size,
+      tick: engine.ticker.getHistory().length,
+      gameTime: engine.ticker.getCurrentGameTime(),
     },
     modules: {
       'room-state': { status: 'online' },
@@ -51,33 +56,56 @@ app.get('/api/status', (_req, res) => {
   });
 });
 
-// HTTP server
-const httpServer = createServer(app);
+app.get('/api/world/rooms', (_req, res) => {
+  const roomList = Array.from(engine.rooms.values()).map((r) => ({
+    id: r.id,
+    name: r.base.name,
+    exits: Object.keys(r.base.exits),
+    type: r.base.material,
+  }));
+  res.json(roomList);
+});
 
-// WebSocket server
+app.get('/api/world/characters', (_req, res) => {
+  const charList = Array.from(engine.characters.values()).map((c) => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    room: c.roomId,
+    hp: c.attributes.hp,
+    level: c.attributes.level,
+  }));
+  res.json(charList);
+});
+
+// ── WebSocket ──────────────────────────────────────
+
+const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+
+interface WsClient {
+  ws: WebSocket;
+  characterId: string | null;
+}
+
+const clients = new Map<WebSocket, WsClient>();
 
 wss.on('connection', (ws, req) => {
   const clientIp = req.socket.remoteAddress ?? 'unknown';
   console.log(`[ws] client connected: ${clientIp}`);
 
-  ws.send(
-    JSON.stringify({
-      type: 'connected',
-      payload: { server: 'pi-realm', version: '0.1.0', timestamp: Date.now() },
-    }),
-  );
+  const client: WsClient = { ws, characterId: null };
+  clients.set(ws, client);
+
+  ws.send(JSON.stringify({
+    type: 'connected',
+    payload: { server: 'pi-realm', version: '0.1.0', timestamp: Date.now() },
+  }));
 
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      console.log(`[ws] message: ${msg.type ?? 'unknown'}`);
-      ws.send(
-        JSON.stringify({
-          type: 'echo',
-          payload: msg,
-        }),
-      );
+      handleMessage(ws, msg);
     } catch {
       ws.send(JSON.stringify({ type: 'error', payload: { message: 'invalid JSON' } }));
     }
@@ -85,28 +113,103 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     console.log(`[ws] client disconnected: ${clientIp}`);
+    // Unregister notify callback
+    if (client.characterId) {
+      // Mark character offline
+      const char = engine.characters.get(client.characterId);
+      if (char) char.isOnline = false;
+    }
+    clients.delete(ws);
   });
+
+  ws.on('error', () => clients.delete(ws));
 });
 
-// Start
+function handleMessage(ws: WebSocket, msg: { type: string; payload?: Record<string, unknown> }): void {
+  const client = clients.get(ws);
+  if (!client) return;
+
+  switch (msg.type) {
+    case 'login': {
+      const charId = (msg.payload?.characterId ?? 'player-1') as string;
+      const char = engine.characters.get(charId);
+      if (!char) {
+        ws.send(JSON.stringify({ type: 'error', payload: { message: `Character '${charId}' not found` } }));
+        return;
+      }
+      client.characterId = charId;
+      char.isOnline = true;
+
+      // Register notification callback
+      const callback = (_charId: string, data: unknown) => {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify(data));
+        }
+      };
+      engine.onNotify(charId, callback);
+
+      // Send initial view
+      const view = engine.generateView(charId);
+      ws.send(JSON.stringify({
+        type: 'login_ok',
+        payload: { characterId: charId, name: char.name, room: char.roomId, view },
+      }));
+      console.log(`[ws] ${char.name} (${charId}) logged in`);
+      break;
+    }
+
+    case 'action': {
+      if (!client.characterId) {
+        ws.send(JSON.stringify({ type: 'error', payload: { message: 'login first' } }));
+        return;
+      }
+      const action = msg.payload as { type: string; payload?: Record<string, unknown> };
+      const result = engine.handleAction(client.characterId, action);
+      const view = engine.generateView(client.characterId);
+      ws.send(JSON.stringify({
+        type: 'action_result',
+        payload: { action: action.type, result, view },
+      }));
+      break;
+    }
+
+    case 'look': {
+      if (!client.characterId) return;
+      const view = engine.generateView(client.characterId);
+      ws.send(JSON.stringify({ type: 'view', payload: view }));
+      break;
+    }
+
+    case 'ping':
+      ws.send(JSON.stringify({ type: 'pong', payload: { timestamp: Date.now() } }));
+      break;
+
+    default:
+      ws.send(JSON.stringify({ type: 'error', payload: { message: `unknown type: ${msg.type}` } }));
+  }
+}
+
+// ── Start ──────────────────────────────────────────
+
 httpServer.listen(PORT, HOST, () => {
   console.log(`┌─────────────────────────────────────────`);
   console.log(`│  Pi Realm Server`);
   console.log(`│  http://${HOST}:${PORT}/api/health`);
   console.log(`│  ws://${HOST}:${PORT}/ws`);
+  console.log(`│  tick: ${TICK_INTERVAL / 1000}s  rooms: ${engine.rooms.size}  chars: ${engine.characters.size}`);
   console.log(`│  mode: ${process.env['NODE_ENV'] ?? 'development'}`);
   console.log(`└─────────────────────────────────────────`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('\n[sigterm] shutting down...');
-  wss.close();
-  httpServer.close(() => process.exit(0));
-});
+// ── Graceful Shutdown ──────────────────────────────
 
-process.on('SIGINT', () => {
-  console.log('\n[sigint] shutting down...');
-  wss.close();
-  httpServer.close(() => process.exit(0));
-});
+function shutdown(signal: string) {
+  console.log(`\n[${signal}] shutting down...`);
+  engine.stopLoop();
+  wss.close(() => {
+    httpServer.close(() => process.exit(0));
+  });
+}
+
+process.on('SIGTERM', () => shutdown('sigterm'));
+process.on('SIGINT', () => shutdown('sigint'));
