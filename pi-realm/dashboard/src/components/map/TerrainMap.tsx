@@ -128,24 +128,22 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     world.y = h / 2;
     world.scale.set(zoom);
 
-    // World bounds
-    const halfW = (w / 2 / zoom) / PPM;
+    // World bounds (relative to view center vx, vy)
+    const halfW = (w / 2 / zoom) / PPM;  // half viewport in world meters
     const halfH = (h / 2 / zoom) / PPM;
     const minX = vx - halfW;
     const minY = vy - halfH;
-    const maxX = vx + halfW;
-    const maxY = vy + halfH;
-    const vw = halfW * 2;
-    const vh = halfH * 2;
 
     const g = new Graphics();
     const t = new Container();
 
-    const tx = (wx: number) => wx - minX;
-    const ty = (wy: number) => wy - minY;
+    // Local coords: origin (0,0) = view center → maps to world.x/y = screen center
+    const tx = (wx: number) => wx - vx;
+    const ty = (wy: number) => wy - vy;
+    const maxX = vx + halfW;
+    const maxY = vy + halfH;
 
     // ── Terrain tiles ────────────────────────────────
-    // Adaptive tile size: smaller at high zoom (detail), larger at low zoom (coverage)
     const tileSize = Math.max(5, Math.round(12 / Math.max(zoom, 0.05)));
     const startTx = Math.floor(minX / tileSize) * tileSize;
     const startTy = Math.floor(minY / tileSize) * tileSize;
@@ -179,20 +177,20 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     if (100 / PPM * zoom > 3) {
       g.stroke({ width: 0.5, color: 0x000000, alpha: 0.04 });
       for (let gx = Math.floor(minX / 100) * 100; gx <= maxX; gx += 100) {
-        g.moveTo(tx(gx), 0).lineTo(tx(gx), vh);
+        g.moveTo(tx(gx), -halfH).lineTo(tx(gx), halfH);
       }
       for (let gy = Math.floor(minY / 100) * 100; gy <= maxY; gy += 100) {
-        g.moveTo(0, ty(gy)).lineTo(vw, ty(gy));
+        g.moveTo(-halfW, ty(gy)).lineTo(halfW, ty(gy));
       }
       g.stroke();
     }
     if (1000 / PPM * zoom > 3) {
       g.stroke({ width: 1, color: 0x000000, alpha: 0.1 });
       for (let gx = Math.floor(minX / 1000) * 1000; gx <= maxX; gx += 1000) {
-        g.moveTo(tx(gx), 0).lineTo(tx(gx), vh);
+        g.moveTo(tx(gx), -halfH).lineTo(tx(gx), halfH);
       }
       for (let gy = Math.floor(minY / 1000) * 1000; gy <= maxY; gy += 1000) {
-        g.moveTo(0, ty(gy)).lineTo(vw, ty(gy));
+        g.moveTo(-halfW, ty(gy)).lineTo(halfW, ty(gy));
       }
       g.stroke();
     }
@@ -204,7 +202,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     for (const loc of sorted) {
       const lx = tx(loc.x - loc.w / 2);
       const ly = ty(loc.y - loc.h / 2);
-      if (lx + loc.w < -50 || lx > vw + 50 || ly + loc.h < -50 || ly > vh + 50) continue;
+      if (lx + loc.w < -halfW - 50 || lx > halfW + 50 || ly + loc.h < -halfH - 50 || ly > halfH + 50) continue;
       if (loc.w * zoom > 2) {
         const color = loc.type === 'town' ? 0xffffff : loc.type === 'building' ? 0xffcc33 : 0xffffff;
         const alpha = loc.type === 'region' ? 0.25 : 0.8;
@@ -219,7 +217,7 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
     // ── Characters ──────────────────────────────────
     for (const ch of characters) {
       const cx = tx(ch.x); const cy = ty(ch.y);
-      if (cx < -20 || cx > vw + 20 || cy < -20 || cy > vh + 20) continue;
+      if (cx < -halfW - 20 || cx > halfW + 20 || cy < -halfH - 20 || cy > halfH + 20) continue;
       const r = ch.type === 'player' ? 5 : 4;
       const color = ch.type === 'player' ? 0xA855F7 : 0x22C55E;
       g.circle(cx, cy, r + 2).fill({ color, alpha: 0.15 });
