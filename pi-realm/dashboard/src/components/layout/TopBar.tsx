@@ -1,6 +1,7 @@
-// Top bar - page title, search, server status
+// Top bar — shows live server status with tick counter
 
-import { Search, Server } from 'lucide-react';
+import { Search, Server, Activity } from 'lucide-react';
+import { useServerStatus } from '../../hooks/useServerStatus.ts';
 
 interface TopBarProps {
   title: string;
@@ -9,6 +10,8 @@ interface TopBarProps {
 }
 
 export function TopBar({ title, subtitle, rightSlot }: TopBarProps) {
+  const { status, events } = useServerStatus(3000);
+
   return (
     <header className="h-16 border-b border-ink-200 bg-white px-8 flex items-center justify-between sticky top-0 z-10">
       <div>
@@ -26,10 +29,23 @@ export function TopBar({ title, subtitle, rightSlot }: TopBarProps) {
             className="pl-8 pr-3 py-1.5 text-sm bg-ink-50 border border-ink-200 rounded-sm w-56 placeholder:text-ink-400 focus:bg-white focus:border-accent-500 transition-colors"
           />
         </div>
+
+        {/* Live tick badge */}
+        {status && (
+          <div className="flex items-center gap-2 px-3 py-1.5 border border-ink-200 rounded-sm text-xs font-mono">
+            <Activity className="w-3.5 h-3.5 text-ink-500" />
+            <span className="text-ink-700">tick #{status.world.tick}</span>
+            <span className="text-ink-400">· {status.world.gameTime}h</span>
+          </div>
+        )}
+
+        {/* Server connection */}
         <div className="flex items-center gap-2 px-3 py-1.5 border border-ink-200 rounded-sm text-xs font-mono">
           <Server className="w-3.5 h-3.5 text-ink-500" />
-          <span className="text-ink-700">localhost:3000</span>
-          <span className="w-1.5 h-1.5 rounded-full bg-status-idle" />
+          <span className="text-ink-700">localhost:3001</span>
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${status ? 'bg-status-online' : 'bg-status-error'}`}
+          />
         </div>
       </div>
     </header>
