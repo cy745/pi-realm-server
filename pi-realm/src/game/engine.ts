@@ -1,23 +1,25 @@
-// Game Engine — the central loop that orchestrates all modules
-//
-// Flow:
-//   init() → startLoop() → [tick → sim → events → notify] × ∞
-//                            ↑                          ↕
-//                     player action → process → notify
+// Game Engine — coordinate-based map system
+// Replaces room-based map with infinite Perlin noise terrain + regions
 
 import { MemoryStore, DEFAULT_DECAY_RATE } from './memory.ts';
-import { createDemoWorld } from './world.ts';
+import { calculateMove, applyMove, restTick } from './movement.ts';
+import { createWorld, charDistance, type WorldState } from './world.ts';
 import { processAction, type Action, type ActionResult } from './actions.ts';
 import { advanceTimeOfDay, applyStructuralDecay, applyWeatherEffects, evolveWeather, spreadFire, type SimulationContext } from '../sim/world-sim.ts';
-import { calculatePerception, type WorldTopology } from '../visibility/perception.ts';
 import { TickScheduler, DEFAULT_TICK_CONFIG } from '../tick/tick-loop.ts';
-import type { Character, CharacterId, RoomId, RoomState, WorldEvent } from '../types.ts';
+import { terrainSpeedFactor } from '../map/terrain.ts';
+import type { CharacterId, WorldEvent } from '../types.ts';
+
+export const TICK_STAMINA_RESTORE = 0.02; // 2% per tick
 
 export type NotifyCallback = (characterId: CharacterId, message: unknown) => void;
 
 export interface CharacterView {
   self: CharacterSnapshot;
-  currentRoom: RoomView;
+  location: string;
+  terrain: string;
+  address: string;
+  orientation: string;
   events: NarratedEvent[];
   availableActions: string[];
 }
@@ -25,19 +27,12 @@ export interface CharacterView {
 interface CharacterSnapshot {
   characterId: CharacterId;
   name: string;
-  roomId: RoomId;
+  x: number;
+  y: number;
   hp: { current: number; max: number };
   mp: { current: number; max: number };
-}
-
-interface RoomView {
-  name: string;
-  description: string;
-  exits: string[];
-  occupants: string[];
-  marks: string[];
-  timeOfDay: string;
-  weather: string;
+  stamina: { current: number; max: number };
+  vehicle: string | null;
 }
 
 interface NarratedEvent {
@@ -47,65 +42,25 @@ interface NarratedEvent {
 }
 
 export class GameEngine {
-  rooms: Map<RoomId, RoomState>;
-  characters: Map<CharacterId, Character>;
+  world: WorldState;
   memory: MemoryStore;
   ticker: TickScheduler;
 
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private notifyCallbacks: Map<CharacterId, NotifyCallback[]> = new Map();
 
-  // World topology for perception calculations
-  private topology: WorldTopology;
-
   constructor() {
-    const world = createDemoWorld();
-    this.rooms = world.rooms;
-    this.characters = world.characters;
+    this.world = createWorld(42);
     this.memory = new MemoryStore();
     this.ticker = new TickScheduler(DEFAULT_TICK_CONFIG);
-
-    this.topology = {
-      getRoom: (id) => {
-        const r = this.rooms.get(id);
-        return r ? { id: r.id, exits: r.base.exits } : undefined;
-      },
-      hasLineOfSight: (_a, _b) => true,
-      pathDistance: (a, b) => {
-        if (a === b) return 0;
-        // BFS for shortest path
-        const visited = new Set<string>();
-        const queue: Array<[string, number]> = [[a, 0]];
-        visited.add(a);
-        while (queue.length > 0) {
-          const [current, dist] = queue.shift()!;
-          const room = this.rooms.get(current);
-          if (!room) continue;
-          for (const exit of Object.values(room.base.exits)) {
-            if (exit === b) return dist + 1;
-            if (!visited.has(exit)) {
-              visited.add(exit);
-              queue.push([exit, dist + 1]);
-            }
-          }
-        }
-        return Infinity;
-      },
-      countWallsBetween: (_a, _b) => {
-        // Simple: if adjacent, no wall; if distance > 1, 1 wall per extra step
-        const dist = this.topology.pathDistance(_a, _b);
-        return Math.max(0, dist - 1);
-      },
-    };
   }
 
   // ── Lifecycle ─────────────────────────────────────
 
   startLoop(intervalMs?: number): void {
     const interval = intervalMs ?? DEFAULT_TICK_CONFIG.tickIntervalMs;
-    console.log(`[engine] tick loop every ${interval / 1000}s (config: 5m, dev: 30s)`);
+    console.log(`[engine] tick loop every ${interval / 1000}s`);
 
-    // Run tick every interval
     this.tickTimer = setInterval(() => {
       this.runTick();
     }, interval);
@@ -130,51 +85,35 @@ export class GameEngine {
     }
 
     this.ticker.startTick(tickRecord.id, now);
-    console.log(`[tick] #${tickRecord.id} start (gameTime=${this.ticker.getCurrentGameTime()})`);
 
-    // Build simulation context
-    const ctx: SimulationContext = {
-      rooms: this.rooms,
-      currentTick: tickRecord.id,
-      worldTime: this.ticker.getCurrentGameTime(),
-    };
+    // Rest stamina for all characters
+    for (const char of this.world.chars.values()) {
+      restTick(char, 1);
+    }
 
-    // Run simulations
-    advanceTimeOfDay(ctx);
-    evolveWeather(ctx, (_roomId) => ({
-      type: Math.random() > 0.8 ? 'rain' : 'clear' as 'rain' | 'clear',
-      intensity: Math.random(),
-    }));
-    applyWeatherEffects(ctx);
-    spreadFire(ctx);
-    applyStructuralDecay(ctx);
     this.memory.decay(DEFAULT_DECAY_RATE);
 
-    // Complete tick
     const gameTime = this.ticker.completeTick(tickRecord.id, now);
     console.log(`[tick] #${tickRecord.id} done → gameTime=${gameTime}`);
 
-    // Notify connected clients
     this.broadcastTick();
   }
 
   // ── Actions ───────────────────────────────────────
 
   handleAction(charId: CharacterId, action: Action): ActionResult {
-    const char = this.characters.get(charId);
+    const char = this.world.chars.get(charId);
     if (!char) {
       return { success: false, message: 'Character not found.', events: [] };
     }
 
     const result = processAction(
-      action,
-      char,
-      this.rooms,
+      action, char,
+      this.world.regions, this.world.terrain,
       this.ticker.getHistory().length,
       this.ticker.getCurrentGameTime(),
     );
 
-    // For movement, update follow-up events
     if (result.events.length > 0) {
       this.broadcastEvents(charId, result.events);
     }
@@ -185,54 +124,44 @@ export class GameEngine {
   // ── View Generation ───────────────────────────────
 
   generateView(charId: CharacterId): CharacterView {
-    const char = this.characters.get(charId);
+    const char = this.world.chars.get(charId);
     if (!char) {
       return {
-        self: { characterId: charId, name: '?', roomId: '', hp: { current: 0, max: 0 }, mp: { current: 0, max: 0 } },
-        currentRoom: { name: 'Void', description: 'You are lost.', exits: [], occupants: [], marks: [], timeOfDay: 'day', weather: 'clear' },
+        self: { characterId: charId, name: '?', x: 0, y: 0, hp: { current: 0, max: 0 }, mp: { current: 0, max: 0 }, stamina: { current: 0, max: 0 }, vehicle: null },
+        location: 'Void',
+        terrain: 'unknown',
+        address: 'Lost',
+        orientation: 'nowhere',
         events: [],
         availableActions: [],
       };
     }
 
-    const room = this.rooms.get(char.roomId);
-
-    const selfSnap: CharacterSnapshot = {
-      characterId: char.id,
-      name: char.name,
-      roomId: char.roomId,
-      hp: { ...char.attributes.hp },
-      mp: { ...char.attributes.mp },
-    };
-
-    const roomView: RoomView = room
-      ? {
-          name: room.base.name,
-          description: room.base.description,
-          exits: Object.keys(room.base.exits),
-          occupants: [],
-          marks: room.dynamic.visible.marks,
-          timeOfDay: room.dynamic.timeOfDay,
-          weather: `${room.dynamic.weather.type} (${Math.round(room.dynamic.weather.intensity * 100)}%)`,
-        }
-      : { name: 'Void', description: 'You are lost.', exits: [], occupants: [], marks: [], timeOfDay: 'day', weather: 'clear' };
-
-    // Add other characters in same room
-    for (const [, other] of this.characters) {
-      if (other.id !== charId && other.roomId === char.roomId) {
-        roomView.occupants.push(other.name);
-      }
-    }
+    const ts = this.world.terrain.sample(char.x, char.y);
+    const address = this.world.regions.getAddressString(char.x, char.y);
+    const orientation = this.world.regions.getOrientation(char.x, char.y);
 
     return {
-      self: selfSnap,
-      currentRoom: roomView,
+      self: {
+        characterId: char.id,
+        name: char.name,
+        x: char.x,
+        y: char.y,
+        hp: { ...char.attributes.hp },
+        mp: { ...char.attributes.mp },
+        stamina: { current: Math.round(char.movement.currentStamina), max: char.movement.maxStamina },
+        vehicle: char.movement.vehicle,
+      },
+      location: address.split(' › ').pop() ?? 'Wilderness',
+      terrain: ts.type,
+      address,
+      orientation,
       events: [],
-      availableActions: ['look', 'move', 'say', 'who', 'inventory'],
+      availableActions: ['look', 'move', 'say', 'rest', 'address', 'who'],
     };
   }
 
-  // ── Client Notifications ──────────────────────────
+  // ── Notifications ─────────────────────────────────
 
   onNotify(charId: CharacterId, cb: NotifyCallback): void {
     if (!this.notifyCallbacks.has(charId)) {
@@ -242,12 +171,9 @@ export class GameEngine {
   }
 
   private broadcastTick(): void {
-    for (const charId of this.characters.keys()) {
+    for (const charId of this.world.chars.keys()) {
       const view = this.generateView(charId);
-      this.notify(charId, {
-        type: 'tick',
-        payload: view,
-      });
+      this.notify(charId, { type: 'tick', payload: view });
     }
   }
 
@@ -257,10 +183,7 @@ export class GameEngine {
       message: `${e.type}: ${JSON.stringify(e.payload)}`,
       type: e.type,
     }));
-    this.notify(charId, {
-      type: 'events',
-      payload: { events: narrated },
-    });
+    this.notify(charId, { type: 'events', payload: { events: narrated } });
   }
 
   private notify(charId: CharacterId, message: unknown): void {

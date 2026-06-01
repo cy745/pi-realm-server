@@ -39,15 +39,14 @@ app.get('/api/status', (_req, res) => {
       node: process.version,
     },
     world: {
-      rooms: engine.rooms.size,
-      characters: engine.characters.size,
+      locations: engine.world.regions.all().length,
+      characters: engine.world.chars.size,
       tick: engine.ticker.getHistory().length,
       gameTime: engine.ticker.getCurrentGameTime(),
     },
     modules: {
-      'room-state': { status: 'online' },
+      'map-terrain': { status: 'online' },
       'tick-loop': { status: 'online' },
-      'world-sim': { status: 'online' },
       perception: { status: 'online' },
       filter: { status: 'online' },
       scout: { status: 'online' },
@@ -56,26 +55,42 @@ app.get('/api/status', (_req, res) => {
   });
 });
 
-app.get('/api/world/rooms', (_req, res) => {
-  const roomList = Array.from(engine.rooms.values()).map((r) => ({
-    id: r.id,
-    name: r.base.name,
-    exits: Object.keys(r.base.exits),
-    type: r.base.material,
+app.get('/api/world/locations', (_req, res) => {
+  const locs = engine.world.regions.all().map((l) => ({
+    id: l.id,
+    name: l.name,
+    type: l.type,
+    x: l.x,
+    y: l.y,
+    w: l.width,
+    h: l.height,
+    parent: l.parentId,
+    children: l.childrenIds.length,
   }));
-  res.json(roomList);
+  res.json(locs);
 });
 
 app.get('/api/world/characters', (_req, res) => {
-  const charList = Array.from(engine.characters.values()).map((c) => ({
+  const charList = Array.from(engine.world.chars.values()).map((c) => ({
     id: c.id,
     name: c.name,
     type: c.type,
-    room: c.roomId,
+    x: Math.round(c.x),
+    y: Math.round(c.y),
     hp: c.attributes.hp,
     level: c.attributes.level,
+    stamina: { current: Math.round(c.movement.currentStamina), max: c.movement.maxStamina },
+    vehicle: c.movement.vehicle,
+    address: engine.world.regions.getAddressString(c.x, c.y),
   }));
   res.json(charList);
+});
+
+app.get('/api/world/terrain', (req, res) => {
+  const x = Number(req.query['x']) || 0;
+  const y = Number(req.query['y']) || 0;
+  const sample = engine.world.terrain.sample(x, y);
+  res.json({ x, y, type: sample.type, height: sample.height, slope: sample.slope });
 });
 
 // ── WebSocket ──────────────────────────────────────
@@ -116,7 +131,7 @@ wss.on('connection', (ws, req) => {
     // Unregister notify callback
     if (client.characterId) {
       // Mark character offline
-      const char = engine.characters.get(client.characterId);
+      const char = engine.world.chars.get(client.characterId);
       if (char) char.isOnline = false;
     }
     clients.delete(ws);
@@ -132,7 +147,7 @@ function handleMessage(ws: WebSocket, msg: { type: string; payload?: Record<stri
   switch (msg.type) {
     case 'login': {
       const charId = (msg.payload?.characterId ?? 'player-1') as string;
-      const char = engine.characters.get(charId);
+      const char = engine.world.chars.get(charId);
       if (!char) {
         ws.send(JSON.stringify({ type: 'error', payload: { message: `Character '${charId}' not found` } }));
         return;
@@ -152,7 +167,7 @@ function handleMessage(ws: WebSocket, msg: { type: string; payload?: Record<stri
       const view = engine.generateView(charId);
       ws.send(JSON.stringify({
         type: 'login_ok',
-        payload: { characterId: charId, name: char.name, room: char.roomId, view },
+        payload: { characterId: charId, name: char.name, x: char.x, y: char.y, view },
       }));
       console.log(`[ws] ${char.name} (${charId}) logged in`);
       break;
@@ -196,7 +211,7 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`│  Pi Realm Server`);
   console.log(`│  http://${HOST}:${PORT}/api/health`);
   console.log(`│  ws://${HOST}:${PORT}/ws`);
-  console.log(`│  tick: ${TICK_INTERVAL / 1000}s  rooms: ${engine.rooms.size}  chars: ${engine.characters.size}`);
+  console.log(`│  tick: ${TICK_INTERVAL / 1000}s  chars: ${engine.world.chars.size}`);
   console.log(`│  mode: ${process.env['NODE_ENV'] ?? 'development'}`);
   console.log(`└─────────────────────────────────────────`);
 });

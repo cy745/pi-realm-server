@@ -48,9 +48,9 @@ export function OverviewPage({ onSelectModule }: OverviewPageProps) {
             <div className="px-5 py-5">
               <div className="text-xs uppercase tracking-wider text-ink-500 font-medium mb-1">World</div>
               <div className="font-mono text-2xl font-semibold text-ink-900 tabular-nums">
-                {status?.world.rooms ?? 0}
+                {status?.world.locations ?? 0}
               </div>
-              <div className="text-[10px] text-ink-400 font-mono mt-0.5">rooms · {npcCount} NPCs · {playersOnline} online</div>
+              <div className="text-[10px] text-ink-400 font-mono mt-0.5">locations · {npcCount} NPCs · {playersOnline} online</div>
             </div>
             <div className="px-5 py-5">
               <div className="text-xs uppercase tracking-wider text-ink-500 font-medium mb-1">Tests</div>
@@ -115,20 +115,19 @@ export function OverviewPage({ onSelectModule }: OverviewPageProps) {
             <Layers className="w-4 h-4 text-ink-700" />
             <div>
               <h2 className="text-sm font-semibold text-ink-900">World Map</h2>
-              <p className="text-xs text-ink-500">{rooms.length} rooms</p>
+              <p className="text-xs text-ink-500">{rooms.length} locations</p>
             </div>
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          {rooms.map((room) => {
-            const occupants = chars.filter((c) => c.room === room.id);
+          {rooms.filter((r) => r.parent !== null).slice(0, 18).map((room) => {
+            const occupants = chars.filter((c) => c.address.includes(room.name));
             return (
               <div key={room.id} className="panel p-3">
                 <div className="text-xs font-semibold text-ink-900 truncate">{room.name}</div>
-                <div className="flex gap-1 flex-wrap mt-1">
-                  {room.exits.map((ex) => (
-                    <span key={ex} className="text-[10px] font-mono text-ink-400 bg-ink-50 px-1 rounded-sm">{ex}</span>
-                  ))}
+                <div className="flex items-center gap-1 mt-1">
+                  <span className="text-[10px] font-mono text-ink-400">{room.type}</span>
+                  <span className="text-[10px] font-mono text-ink-300">({room.x},{room.y})</span>
                 </div>
                 {occupants.length > 0 && (
                   <div className="mt-2 text-[10px] font-mono text-ink-500 space-y-0.5">
@@ -165,30 +164,27 @@ export function OverviewPage({ onSelectModule }: OverviewPageProps) {
                   <th className="text-left px-4 py-2 text-ink-500 font-medium">Type</th>
                   <th className="text-left px-4 py-2 text-ink-500 font-medium">Level</th>
                   <th className="text-left px-4 py-2 text-ink-500 font-medium">HP</th>
-                  <th className="text-left px-4 py-2 text-ink-500 font-medium">Room</th>
+                  <th className="text-left px-4 py-2 text-ink-500 font-medium">Address</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-50">
-                {chars.map((c) => {
-                  const room = rooms.find((r) => r.id === c.room);
-                  return (
-                    <tr key={c.id} className="hover:bg-ink-50/50">
-                      <td className="px-4 py-2 text-ink-900">{c.name}</td>
-                      <td className="px-4 py-2">
-                        <span className={`${c.type === 'player' ? 'text-accent-600' : 'text-ink-500'}`}>{c.type}</span>
-                      </td>
-                      <td className="px-4 py-2 text-ink-700">{c.level}</td>
-                      <td className="px-4 py-2">
-                        <div className="flex items-center gap-1">
-                          <span className={`${c.hp.current < c.hp.max * 0.3 ? 'text-status-error' : 'text-status-online'}`}>
-                            {c.hp.current}/{c.hp.max}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2 text-ink-500 truncate max-w-[120px]">{room?.name ?? c.room}</td>
-                    </tr>
-                  );
-                })}
+                {chars.map((c) => (
+                  <tr key={c.id} className="hover:bg-ink-50/50">
+                    <td className="px-4 py-2 text-ink-900">{c.name}</td>
+                    <td className="px-4 py-2">
+                      <span className={`${c.type === 'player' ? 'text-accent-600' : 'text-ink-500'}`}>{c.type}</span>
+                    </td>
+                    <td className="px-4 py-2 text-ink-700">{c.level}</td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-1">
+                        <span className={`${c.hp.current < c.hp.max * 0.3 ? 'text-status-error' : 'text-status-online'}`}>
+                          {c.hp.current}/{c.hp.max}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-ink-500 truncate max-w-[160px] font-mono text-[10px]">{c.address ?? `${c.x},${c.y}`}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

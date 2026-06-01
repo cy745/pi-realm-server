@@ -107,12 +107,21 @@ export interface StateChange {
   witnessedBy: CharacterId[];
 }
 
+export interface MovementStats {
+  speed: number;           // base speed in m/s
+  currentStamina: number;  // current stamina
+  maxStamina: number;      // max stamina
+  vehicle: string | null;  // vehicle type (TBD)
+}
+
 export interface Character {
   id: CharacterId;
   name: string;
   type: 'player' | 'npc';
-  roomId: RoomId;
+  x: number;               // world coordinate (meters)
+  y: number;               // world coordinate (meters)
   attributes: CharacterAttributes;
+  movement: MovementStats;
   faction?: string;
   goals: string[];
   isOnline: boolean;

@@ -6,24 +6,33 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 
 export interface ServerStatus {
   server: { uptime: number; memory: number; node: string };
-  world: { rooms: number; characters: number; tick: number; gameTime: number };
+  world: { locations: number; characters: number; tick: number; gameTime: number };
   modules: Record<string, { status: string }>;
 }
 
 export interface RoomInfo {
   id: string;
   name: string;
-  exits: string[];
   type: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  parent: string | null;
+  children: number;
 }
 
 export interface CharInfo {
   id: string;
   name: string;
   type: string;
-  room: string;
+  x: number;
+  y: number;
   hp: { current: number; max: number };
   level: number;
+  stamina: { current: number; max: number };
+  vehicle: string | null;
+  address: string;
 }
 
 export interface WsEvent {
@@ -54,7 +63,7 @@ export function useServerStatus(pollMs = 3000): {
       try {
         const [sRes, rRes, cRes] = await Promise.all([
           fetch(`${API_BASE}/api/status`),
-          fetch(`${API_BASE}/api/world/rooms`),
+          fetch(`${API_BASE}/api/world/locations`),
           fetch(`${API_BASE}/api/world/characters`),
         ]);
         if (sRes.ok) setStatus(await sRes.json());

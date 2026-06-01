@@ -31,7 +31,7 @@ export function LiveModuleCard({ module, liveStatus, onClick }: LiveModuleCardPr
         ];
       case 'map-state':
         return [
-          { label: 'Rooms', value: liveStatus.world.rooms, trend: 'flat' as const },
+          { label: 'Locations', value: liveStatus.world.locations, trend: 'flat' as const },
           { label: 'Characters', value: liveStatus.world.characters },
           { label: 'Memory', value: '—' },
         ];
