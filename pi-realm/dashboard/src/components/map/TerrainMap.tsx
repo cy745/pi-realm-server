@@ -1,263 +1,222 @@
-// Terrain Map — PixiJS (WebGL) with zero-CPU drag/zoom
-// Terrain regenerated on demand; view transforms are GPU-only
+// Terrain Map — PixiJS with safety guards against infinite resize
 
 import { useEffect, useRef, useState } from 'react';
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { sampleTerrain, getTerrainColor } from './perlin.ts';
 
-interface LocationMarker { id: string; name: string; type: string; x: number; y: number; w: number; h: number; }
-interface CharacterDot { id: string; name: string; type: string; x: number; y: number; }
-interface Props { locations: LocationMarker[]; characters: CharacterDot[]; centerX?: number; centerY?: number; className?: string; }
+interface LM { id: string; name: string; type: string; x: number; y: number; w: number; h: number; }
+interface CD { id: string; name: string; type: string; x: number; y: number; }
+interface Props { locations: LM[]; characters: CD[]; centerX?: number; centerY?: number; className?: string; }
 
-const TILE_W = 15;  // world meters per tile
-const TILE_P = 8;   // pixels per tile on texture
-const WPX = TILE_P / TILE_W; // pixels per world meter at zoom=1
+const WPX = 8 / 15; // pixels per world meter (at zoom=1)
+const TEX_SIZES = [2048, 1024, 512]; // for zoom <0.5, <1, >=1
+function texSize(zoom: number) { return zoom < 0.5 ? TEX_SIZES[0]! : zoom < 1 ? TEX_SIZES[1]! : TEX_SIZES[2]!; }
+
+function safe(v: number, fallback = 0): number { return isFinite(v) ? v : fallback; }
 
 export function TerrainMap({ locations, characters, centerX = 500, centerY = 800, className = '' }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
-
-  // All mutable state lives in refs to avoid React re-render loops
   const state = useRef({
     app: null as Application | null,
-    tc: null as Container | null,      // terrain container (root of world-space)
+    tc: null as Container | null,
     sprite: null as Sprite | null,
     overlay: null as Graphics | null,
     labels: null as Container | null,
-    vx: centerX, vy: centerY,          // view center (world coords)
-    zoom: 0.2,                          // view zoom
-    texCX: 0, texCY: 0,                // terrain texture center (world coords)
-    w: 800, h: 600,
-    dragging: false,
-    dragSx: 0, dragSy: 0,              // drag start (screen)
-    dragVx: 0, dragVy: 0,             // view center at drag start
+    vx: safe(centerX), vy: safe(centerY),
+    zoom: 0.3, // start slightly zoomed in
+    texCX: 0, texCY: 0,
+    w: 800, h: 400,
+    dragging: false, dragSx: 0, dragSy: 0, dragVx: 0, dragVy: 0,
   });
-
-  // ── Init PixiJS ────────────────────────────────
 
   useEffect(() => {
     const div = rootRef.current;
     if (!div || state.current.app) return;
 
     (async () => {
-      const w0 = div.clientWidth || 800;
-      const h0 = div.clientHeight || 400;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w0 = Math.max(100, div.clientWidth || 800);
+      const h0 = Math.max(100, div.clientHeight || 400);
       const app = new Application();
-      await app.init({
-        width: w0,
-        height: h0,
-        background: '#1a3a5c',
-        antialias: false,
-        resolution: dpr,
-        autoDensity: true,
-      });
+      try {
+        await app.init({
+          width: w0, height: h0,
+          background: '#1a3a5c', antialias: false,
+          resolution: 1,
+        });
+      } catch {
+        console.warn('[map] PixiJS init failed, using fallback');
+        div.innerHTML = '<div class="p-4 text-white/50 text-xs">Map unavailable</div>';
+        return;
+      }
       div.appendChild(app.canvas);
       const s = state.current;
       s.app = app;
+      s.w = w0; s.h = h0;
 
-      // Root container for all world-space objects, scaled by zoom
+      app.canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        setTimeout(() => window.location.reload(), 500);
+      });
+
       const tc = new Container();
       app.stage.addChild(tc);
       s.tc = tc;
 
-      // Handle WebGL context loss
-      app.canvas.addEventListener('webglcontextlost', (e) => {
-        e.preventDefault();
-        console.warn('[map] WebGL context lost, reloading...');
-        setTimeout(() => window.location.reload(), 1000);
-      });
-
-      // Enable stage interaction
       app.stage.eventMode = 'static';
       app.stage.hitArea = app.screen;
-
       app.stage.on('pointerdown', (e) => {
-        s.dragging = true;
-        s.dragSx = e.global.x;
-        s.dragSy = e.global.y;
-        s.dragVx = s.vx;
-        s.dragVy = s.vy;
+        s.dragging = true; s.dragSx = e.global.x; s.dragSy = e.global.y;
+        s.dragVx = s.vx; s.dragVy = s.vy;
       });
-
       app.stage.on('pointermove', (e) => {
         if (!s.dragging) return;
-        const dx = (e.global.x - s.dragSx) / s.zoom / WPX;
-        const dy = (e.global.y - s.dragSy) / s.zoom / WPX;
-        s.vx = s.dragVx - dx;
-        s.vy = s.dragVy - dy;
-        render(s);
+        const f = safe(s.zoom * WPX);
+        if (f === 0) return;
+        const dx = safe((e.global.x - s.dragSx) / f);
+        const dy = safe((e.global.y - s.dragSy) / f);
+        s.vx = safe(s.dragVx - dx, centerX);
+        s.vy = safe(s.dragVy - dy, centerY);
+        tick();
       });
+      const end = () => { s.dragging = false; };
+      app.stage.on('pointerup', end);
+      app.stage.on('pointerupoutside', end);
 
-      const endDrag = () => { s.dragging = false; };
-      app.stage.on('pointerup', endDrag);
-      app.stage.on('pointerupoutside', endDrag);
-
-      // Wheel zoom (DOM event for non-passive)
+      // Wheel
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
-        const factor = e.deltaY > 0 ? 0.85 : 1.18;
-        s.zoom = Math.max(0.02, Math.min(50, s.zoom * factor));
-        render(s);
+        s.zoom = safe(Math.max(0.02, Math.min(50, s.zoom * (e.deltaY > 0 ? 0.85 : 1.18))), 0.3);
+        tick();
       };
       div.addEventListener('wheel', onWheel, { passive: false });
 
       // Keyboard
       const onKey = (e: KeyboardEvent) => {
-        if (e.key === '+' || e.key === '=') { s.zoom = Math.min(50, s.zoom * 1.2); render(s); }
-        if (e.key === '-') { s.zoom = Math.max(0.02, s.zoom / 1.2); render(s); }
+        if (e.key === '+' || e.key === '=') { s.zoom = safe(Math.min(50, s.zoom * 1.2), 0.3); tick(); }
+        if (e.key === '-') { s.zoom = safe(Math.max(0.02, s.zoom / 1.2), 0.3); tick(); }
       };
       window.addEventListener('keydown', onKey);
 
-      // Resize (manual)
+      // Resize
       const ro = new ResizeObserver(() => {
-        const nw = div.clientWidth || 800;
-        const nh = div.clientHeight || 400;
-        if (nw !== app.screen.width || nh !== app.screen.height) {
-          app.renderer.resize(nw, nh);
-        }
-        s.w = nw;
-        s.h = nh;
-        render(s);
+        const nw = Math.max(100, div.clientWidth || 800);
+        const nh = Math.max(100, div.clientHeight || 400);
+        s.w = nw; s.h = nh;
+        try { app.renderer.resize(nw, nh); } catch { /* ignore */ }
+        tick();
       });
       ro.observe(div);
 
-      // Initial render
-      s.w = app.screen.width;
-      s.h = app.screen.height;
-      render(s);
+      function tick() { try { render(s); } catch (e) { console.warn('[map] render error', e); } }
+
+      tick();
       setReady(true);
 
       return () => {
         ro.disconnect();
         window.removeEventListener('keydown', onKey);
         div.removeEventListener('wheel', onWheel);
-        app.destroy(true);
+        try { app.destroy(true); } catch { /* ignore */ }
         s.app = null;
       };
     })();
   }, []);
 
-  // ── Render ──────────────────────────────────────
-
   function render(s: typeof state.current) {
-    const app = s.app;
-    const tc = s.tc;
+    const app = s.app; const tc = s.tc;
     if (!app || !tc) return;
-    const w = s.w;
-    const h = s.h;
-    if (w === 0 || h === 0) return;
+    const w = s.w; const h = s.h;
+    if (w < 50 || h < 50) return;
+    const zoom = safe(s.zoom, 0.3);
+    if (zoom <= 0) return;
+    const vx = safe(s.vx, centerX);
+    const vy = safe(s.vy, centerY);
 
-    const zoom = s.zoom;
-    const vx = s.vx;
-    const vy = s.vy;
-
-    // Center the container, scale by zoom
     tc.x = w / 2;
     tc.y = h / 2;
     tc.scale.set(zoom);
 
-    // World bounds visible on screen (in world coords, relative to container origin)
-    const halfW = (w / 2 / zoom) / WPX;
-    const halfH = (h / 2 / zoom) / WPX;
-    const minX = vx - halfW;
-    const minY = vy - halfH;
+    const hW = safe((w / 2 / zoom) / WPX, 100);
+    const hH = safe((h / 2 / zoom) / WPX, 100);
+    const minX = safe(vx - hW, -10000);
+    const minY = safe(vy - hH, -10000);
 
-    // ── Fixed-size terrain texture ────────────────
-    // At low zoom: 2048px covers wide area; at high zoom: 512px is enough
-    const TEX_SIZE = zoom < 0.5 ? 2048 : zoom < 1 ? 1024 : 512;
-    const texWorldW = TEX_SIZE / WPX; // world meters the texture covers
-    const texWorldH = TEX_SIZE / WPX;
-    const rebuildThresh = texWorldW * 0.3;
-    const needRebuild = Math.sqrt((vx - s.texCX) ** 2 + (vy - s.texCY) ** 2) > rebuildThresh;
+    // Terrain texture
+    const texSize = TEX_SIZES[0]!;
+    const texWW = safe(texSize / WPX, 1000);
+    const rebound = Math.sqrt((vx - s.texCX) ** 2 + (vy - s.texCY) ** 2) > texWW * 0.3;
 
-    if (needRebuild) {
-      if (s.sprite) { tc.removeChild(s.sprite); s.sprite.destroy(); s.sprite = null; }
-
-      // Build fixed-size texture centered on current view
-      const texStartX = vx - texWorldW / 2;
-      const texStartY = vy - texWorldH / 2;
-
-      // Canvas: 1 pixel = 1 tile
-      const TILE_SIZE = WPX; // world units per pixel on canvas = meters per tile
+    if (rebound) {
+      if (s.sprite) { try { tc.removeChild(s.sprite); s.sprite.destroy(); } catch { /* ignore */ } s.sprite = null; }
+      const tsx = safe(vx - texWW / 2, -100000);
+      const tsy = safe(vy - texWW / 2, -100000);
       const canvas = document.createElement('canvas');
-      canvas.width = TEX_SIZE;
-      canvas.height = TEX_SIZE;
-      const ctx = canvas.getContext('2d')!;
-      const imageData = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-      const data = imageData.data;
-
-      // Batch fill via ImageData — much faster than fillRect per tile
-      for (let py = 0; py < TEX_SIZE; py++) {
-        for (let px = 0; px < TEX_SIZE; px++) {
-          const wx = texStartX + px * TILE_SIZE;
-          const wy = texStartY + py * TILE_SIZE;
-          const color = getTerrainColor(sampleTerrain(wx, wy).type);
-          const i = (py * TEX_SIZE + px) * 4;
-          data[i] = parseInt(color.slice(1, 3), 16);     // R
-          data[i + 1] = parseInt(color.slice(3, 5), 16);   // G
-          data[i + 2] = parseInt(color.slice(5, 7), 16);   // B
-          data[i + 3] = 255;                               // A
+      canvas.width = texSize; canvas.height = texSize;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const id = ctx.createImageData(texSize, texSize);
+        const d = id.data;
+        for (let py = 0; py < texSize; py++) {
+          for (let px = 0; px < texSize; px++) {
+            const wx = safe(tsx + px * WPX, 0);
+            const wy = safe(tsy + py * WPX, 0);
+            const c = getTerrainColor(sampleTerrain(wx, wy).type);
+            const i = (py * texSize + px) * 4;
+            d[i] = parseInt(c.slice(1, 3), 16) || 0;
+            d[i + 1] = parseInt(c.slice(3, 5), 16) || 0;
+            d[i + 2] = parseInt(c.slice(5, 7), 16) || 0;
+            d[i + 3] = 255;
+          }
         }
+        ctx.putImageData(id, 0, 0);
       }
-      ctx.putImageData(imageData, 0, 0);
-
-      const texture = Texture.from(canvas);
-      const sprite = new Sprite(texture);
-
-      // Sprite: position so its (texStartX, texStartY) aligns with world origin
-      sprite.x = -(vx - texWorldW / 2);
-      sprite.y = -(vy - texWorldH / 2);
+      let tex: Texture;
+      try { tex = Texture.from(canvas); } catch { return; }
+      const sprite = new Sprite(tex);
+      sprite.x = safe(-(vx - texWW / 2), -100000);
+      sprite.y = safe(-(vy - texWW / 2), -100000);
       sprite.scale.set(WPX);
-
       tc.addChild(sprite);
       s.sprite = sprite;
-      s.texCX = vx;
-      s.texCY = vy;
-    } else {
-      // Update existing sprite position to follow view
-      if (s.sprite) {
-        s.sprite.x = -(vx - texWorldW / 2);
-        s.sprite.y = -(vy - texWorldH / 2);
-      }
+      s.texCX = vx; s.texCY = vy;
+    } else if (s.sprite) {
+      s.sprite.x = safe(-(vx - texWW / 2), -100000);
+      s.sprite.y = safe(-(vy - texWW / 2), -100000);
     }
 
-    // ── Overlays ──────────────────────────────────
-    if (s.overlay) { tc.removeChild(s.overlay); s.overlay.destroy(); }
-    if (s.labels) { tc.removeChild(s.labels); s.labels.destroy(); }
+    // Overlays
+    if (s.overlay) { try { tc.removeChild(s.overlay); s.overlay.destroy(); } catch { /* ignore */ } }
+    if (s.labels) { try { tc.removeChild(s.labels); s.labels.destroy(); } catch { /* ignore */ } }
 
     const overlay = new Graphics();
     const labels = new Container();
-    const toPX = (wx: number, wy: number): [number, number] => [
-      (wx - minX), (wy - minY),
-    ];
+    const px = (wx: number) => safe(wx - minX, 0);
+    const py = (wy: number) => safe(wy - minY, 0);
+
+    const vw = hW * 2; const vh = hH * 2;
 
     // Grid
-    const gsPx = 100 / WPX * zoom;
-    if (gsPx > 4) {
+    const g100 = 100 / WPX * zoom;
+    if (g100 > 3) {
       overlay.stroke({ width: 0.5, color: 0x000000, alpha: 0.04 });
-      for (let gx = Math.floor(minX / 100) * 100; gx <= minX + halfW * 2; gx += 100) {
-        const [px] = toPX(gx, 0);
-        overlay.moveTo(px, 0); overlay.lineTo(px, halfH * 2);
+      for (let gx = Math.floor(minX / 100) * 100; gx <= minX + vw; gx += 100) {
+        const x = px(gx); if (x > 0) { overlay.moveTo(x, 0); overlay.lineTo(x, vh); }
       }
-      for (let gy = Math.floor(minY / 100) * 100; gy <= minY + halfH * 2; gy += 100) {
-        const [, py] = toPX(0, gy);
-        overlay.moveTo(0, py); overlay.lineTo(halfW * 2, py);
+      for (let gy = Math.floor(minY / 100) * 100; gy <= minY + vh; gy += 100) {
+        const y = py(gy); if (y > 0) { overlay.moveTo(0, y); overlay.lineTo(vw, y); }
       }
       overlay.stroke();
     }
 
-    // 1km grid
-    const kmPx = 1000 / WPX * zoom;
-    if (kmPx > 4) {
+    const g1000 = 1000 / WPX * zoom;
+    if (g1000 > 3) {
       overlay.stroke({ width: 1, color: 0x000000, alpha: 0.1 });
-      for (let gx = Math.floor(minX / 1000) * 1000; gx <= minX + halfW * 2; gx += 1000) {
-        const [px] = toPX(gx, 0);
-        overlay.moveTo(px, 0); overlay.lineTo(px, halfH * 2);
+      for (let gx = Math.floor(minX / 1000) * 1000; gx <= minX + vw; gx += 1000) {
+        const x = px(gx); if (x > 0) { overlay.moveTo(x, 0); overlay.lineTo(x, vh); }
       }
-      for (let gy = Math.floor(minY / 1000) * 1000; gy <= minY + halfH * 2; gy += 1000) {
-        const [, py] = toPX(0, gy);
-        overlay.moveTo(0, py); overlay.lineTo(halfW * 2, py);
+      for (let gy = Math.floor(minY / 1000) * 1000; gy <= minY + vh; gy += 1000) {
+        const y = py(gy); if (y > 0) { overlay.moveTo(0, y); overlay.lineTo(vw, y); }
       }
       overlay.stroke();
     }
@@ -267,55 +226,46 @@ export function TerrainMap({ locations, characters, centerX = 500, centerY = 800
       ((a.type === 'region' || a.type === 'continent') ? 0 : 1) -
       ((b.type === 'region' || b.type === 'continent') ? 0 : 1));
     for (const loc of sorted) {
-      const [lx, ly] = toPX(loc.x - loc.w / 2, loc.y - loc.h / 2);
-      const lw = loc.w; const lh = loc.h;
-      if (lx + lw < -50 || lx > halfW * 2 + 50 || ly + lh < -50 || ly > halfH * 2 + 50) continue;
-      if (lw * zoom > 2) {
-        const color = loc.type === 'town' ? 0xffffff : loc.type === 'building' ? 0xffcc33 : loc.type === 'room' ? 0xffcc33 : loc.type === 'region' ? 0xffffff : 0xcccccc;
-        const alpha = loc.type === 'region' ? 0.25 : loc.type === 'town' ? 0.8 : 0.6;
-        overlay.stroke({ width: loc.type === 'region' ? 0.5 : loc.type === 'town' ? 1.5 : 1, color, alpha });
-        if (loc.type === 'region' || loc.type === 'continent') overlay.stroke({ width: 1, color: 0xffffff, alpha: 0.25 });
-        overlay.rect(lx, ly, lw, lh);
-        overlay.stroke();
+      const lx = px(loc.x - loc.w / 2); const ly = py(loc.y - loc.h / 2);
+      if (lx > vw + 50 || lx + loc.w < -50 || ly > vh + 50 || ly + loc.h < -50) continue;
+      if (!isFinite(lx) || !isFinite(ly)) continue;
+      if (loc.w * zoom > 2) {
+        const color = loc.type === 'town' ? 0xffffff : loc.type === 'building' ? 0xffcc33 : loc.type === 'room' ? 0xffcc33 : 0xffffff;
+        const alpha = loc.type === 'region' ? 0.25 : 0.8;
+        overlay.stroke({ width: loc.type === 'region' ? 0.5 : 1, color, alpha });
+        overlay.rect(lx, ly, loc.w, loc.h); overlay.stroke();
       }
-      if (lw * zoom > 30 && lh * zoom > 8) {
-        const t = new Text({
-          text: loc.name,
-          style: { fontSize: Math.max(9, Math.min(13, lw * zoom / 10)), fill: loc.type === 'town' ? '#ffffff' : loc.type === 'building' ? '#ffcc64cc' : '#ffffff99', fontFamily: 'Fira Sans, sans-serif', fontWeight: '600' },
-        });
-        t.x = lx + 2; t.y = ly + 2;
-        labels.addChild(t);
+      if (loc.w * zoom > 30 && loc.h * zoom > 8) {
+        try {
+          const t = new Text({ text: loc.name, style: { fontSize: 10, fill: '#ffffff', fontFamily: 'Fira Sans' } });
+          t.x = lx + 2; t.y = ly + 2; labels.addChild(t);
+        } catch { /* ignore */ }
       }
     }
 
     // Characters
     for (const ch of characters) {
-      const [cx, cy] = toPX(ch.x, ch.y);
-      if (cx < -20 || cx > halfW * 2 + 20 || cy < -20 || cy > halfH * 2 + 20) continue;
+      const cx = px(ch.x); const cy = py(ch.y);
+      if (cx < -20 || cx > vw + 20 || cy < -20 || cy > vh + 20 || !isFinite(cx) || !isFinite(cy)) continue;
       const r = ch.type === 'player' ? 5 : 4;
       const color = ch.type === 'player' ? 0xA855F7 : 0x22C55E;
-      overlay.circle(cx, cy, r + 3); overlay.fill({ color, alpha: 0.15 });
+      overlay.circle(cx, cy, r + 2); overlay.fill({ color, alpha: 0.15 });
       overlay.circle(cx, cy, r); overlay.fill({ color });
       overlay.circle(cx, cy, r); overlay.stroke({ width: 1.5, color: 0xffffff });
-      const t = new Text({ text: ch.name, style: { fontSize: 10, fill: '#ffffff', fontFamily: 'Fira Sans, sans-serif', fontWeight: '600' } });
-      t.x = cx + 8; t.y = cy - t.height - 2;
-      labels.addChild(t);
+      try {
+        const t = new Text({ text: ch.name, style: { fontSize: 10, fill: '#ffffff', fontFamily: 'Fira Sans' } });
+        t.x = cx + 8; t.y = cy - 14; labels.addChild(t);
+      } catch { /* ignore */ }
     }
 
-    tc.addChild(overlay);
-    s.overlay = overlay;
-    tc.addChild(labels);
-    s.labels = labels;
+    tc.addChild(overlay); s.overlay = overlay;
+    tc.addChild(labels); s.labels = labels;
   }
 
   return (
     <div ref={rootRef} className={`relative overflow-hidden bg-ink-900 ${className}`}
       style={{ width: '100%', height: '100%', minHeight: '400px' }}>
-      {!ready && (
-        <div className="absolute inset-0 flex items-center justify-center text-white/50 text-xs font-mono">
-          Initializing WebGL...
-        </div>
-      )}
+      {!ready && <div className="absolute inset-0 flex items-center justify-center text-white/50 text-xs font-mono">Initializing...</div>}
     </div>
   );
 }
