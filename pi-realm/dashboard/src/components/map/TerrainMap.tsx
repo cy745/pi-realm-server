@@ -14,9 +14,9 @@ interface LM { id: string; name: string; type: string; x: number; y: number; w: 
 interface CD { id: string; name: string; type: string; x: number; y: number; }
 interface Props { locations: LM[]; characters: CD[]; centerX?: number; centerY?: number; className?: string; }
 
-const TILE_SIZE = 15; // meters per terrain tile
-const PPM = 8 / 15;   // pixels per meter on terrain texture
-const TEX_SIZE = 1024; // terrain texture size (px)
+const TILE_SIZE = 40; // meters per terrain tile (higher = fewer tiles = faster)
+const PPM = 1 / TILE_SIZE; // pixels per meter on terrain texture
+const TEX_SIZE = 256; // terrain texture size (px) — smaller = much faster generation
 const TEX_WORLD = TEX_SIZE / PPM; // world meters covered by texture
 
 export function TerrainMap({ locations, characters, centerX = 500, centerY = 800, className = '' }: Props) {
