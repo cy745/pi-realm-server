@@ -168,36 +168,51 @@ function getLiveMetrics(moduleId: string, status?: ServerStatus | null) {
 // ── Room Detail ────────────────────────────────────
 
 function RoomDetail({ rooms, chars }: { rooms: RoomInfo[]; chars: CharInfo[] }) {
+  const roots = rooms.filter((r) => r.parent === null);
   return (
     <section className="mb-6">
       <div className="panel">
         <div className="panel-header">
           <div className="text-xs uppercase tracking-wider text-ink-500 font-mono font-medium">
-            Rooms · {rooms.length}
+            Locations · {rooms.length}
           </div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 p-4">
-          {rooms.map((room) => {
-            const occupants = chars.filter((c) => c.room === room.id);
-            return (
-              <div key={room.id} className="border border-ink-200 rounded-sm p-3">
-                <div className="text-xs font-semibold text-ink-900 truncate">{room.name}</div>
-                <div className="flex gap-1 flex-wrap mt-1">
-                  {room.exits.map((ex) => (
-                    <span key={ex} className="text-[10px] font-mono text-ink-400 bg-ink-50 px-1 rounded-sm">{ex}</span>
-                  ))}
-                </div>
-                {occupants.map((c) => (
-                  <div key={c.id} className="mt-1 text-[10px] font-mono text-ink-500">
-                    {c.type === 'player' ? '▸' : '○'} {c.name} Lv.{c.level}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
+        <div className="p-4 font-mono text-xs space-y-1 max-h-96 overflow-y-auto">
+          {roots.map((root) => (
+            <LocationTree key={root.id} node={root} rooms={rooms} chars={chars} depth={0} />
+          ))}
         </div>
       </div>
     </section>
+  );
+}
+
+function LocationTree({ node, rooms, chars, depth }: { node: RoomInfo; rooms: RoomInfo[]; chars: CharInfo[]; depth: number }) {
+  const children = rooms.filter((r) => r.parent === node.id);
+  const occupants = chars.filter((c) => c.address && c.address.includes(node.name));
+  const indent = depth * 16;
+  return (
+    <div>
+      <div className="flex items-center gap-2 py-0.5 hover:bg-ink-50 rounded-sm" style={{ marginLeft: indent }}>
+        <span className="text-ink-400 w-4 shrink-0">{depth === 0 ? '▼' : '▸'}</span>
+        <span className="text-ink-900 font-semibold">{node.name}</span>
+        <span className="text-ink-400 text-[10px]">({node.x},{node.y})</span>
+        <span className="text-ink-400 bg-ink-50 px-1 rounded-sm text-[10px]">{node.type}</span>
+        {node.w * node.h < 10000 && (
+          <span className="text-ink-400 bg-ink-50 px-1 rounded-sm text-[10px]">{node.w}×{node.h}m</span>
+        )}
+      </div>
+      {occupants.length > 0 && (
+        <div className="flex items-center gap-2 py-0.5 text-status-online text-[10px]" style={{ marginLeft: indent + 16 }}>
+          {occupants.map((c) => (
+            <span key={c.id}>{c.type === 'player' ? '▸' : '○'} {c.name}</span>
+          ))}
+        </div>
+      )}
+      {children.map((child) => (
+        <LocationTree key={child.id} node={child} rooms={rooms} chars={chars} depth={depth + 1} />
+      ))}
+    </div>
   );
 }
 

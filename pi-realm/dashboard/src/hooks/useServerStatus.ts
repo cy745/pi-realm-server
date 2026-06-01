@@ -1,6 +1,6 @@
-// Live server status polling + WebSocket connection
+// Live server status polling + singleton WebSocket for events
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState } from 'react';
 
 // ── Types ──────────────────────────────────────────
 
@@ -41,9 +41,53 @@ export interface WsEvent {
   timestamp: number;
 }
 
-// ── Status Polling ──────────────────────────────────
+// ── Singleton WebSocket ────────────────────────────
 
-const API_BASE = '';
+type WsListener = (event: WsEvent) => void;
+let wsInstance: WebSocket | null = null;
+let wsListeners: WsListener[] = [];
+let wsConnected = false;
+
+function ensureWs(): void {
+  if (wsInstance && wsInstance.readyState === WebSocket.OPEN) return;
+  if (wsInstance && wsInstance.readyState === WebSocket.CONNECTING) return;
+
+  try {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${proto}//${window.location.host}/ws`;
+    wsInstance = new WebSocket(wsUrl);
+    wsInstance.onopen = () => {
+      wsConnected = true;
+      console.log('[ws] connected');
+    };
+    wsInstance.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        const event: WsEvent = { type: data.type, payload: data.payload, timestamp: Date.now() };
+        for (const fn of wsListeners) fn(event);
+      } catch { /* ignore */ }
+    };
+    wsInstance.onclose = () => {
+      wsConnected = false;
+      wsInstance = null;
+      console.log('[ws] disconnected, reconnecting in 3s');
+      setTimeout(ensureWs, 3000);
+    };
+    wsInstance.onerror = () => {
+      wsInstance?.close();
+    };
+  } catch { /* ignore */ }
+}
+
+function subscribeWs(fn: WsListener): () => void {
+  wsListeners.push(fn);
+  ensureWs();
+  return () => {
+    wsListeners = wsListeners.filter((l) => l !== fn);
+  };
+}
+
+// ── Status Polling ──────────────────────────────────
 
 export function useServerStatus(pollMs = 3000): {
   status: ServerStatus | null;
@@ -55,16 +99,15 @@ export function useServerStatus(pollMs = 3000): {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [chars, setChars] = useState<CharInfo[]>([]);
   const [events, setEvents] = useState<WsEvent[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
 
   // Poll HTTP status
   useEffect(() => {
     const fetchStatus = async () => {
       try {
         const [sRes, rRes, cRes] = await Promise.all([
-          fetch(`${API_BASE}/api/status`),
-          fetch(`${API_BASE}/api/world/locations`),
-          fetch(`${API_BASE}/api/world/characters`),
+          fetch('/api/status'),
+          fetch('/api/world/locations'),
+          fetch('/api/world/characters'),
         ]);
         if (sRes.ok) setStatus(await sRes.json());
         if (rRes.ok) setRooms(await rRes.json());
@@ -78,28 +121,11 @@ export function useServerStatus(pollMs = 3000): {
     return () => clearInterval(timer);
   }, [pollMs]);
 
-  // WebSocket for live events — connect through Vite proxy
+  // Singleton WebSocket
   useEffect(() => {
-    // Use relative WS URL so Vite dev proxy handles it
-    const wsUrl = `/ws`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => console.log('[ws] connected');
-    ws.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        setEvents((prev) => [
-          { type: data.type, payload: data.payload, timestamp: Date.now() },
-          ...prev.slice(0, 49), // keep last 50
-        ]);
-      } catch {
-        // ignore
-      }
-    };
-    ws.onclose = () => console.log('[ws] disconnected');
-
-    return () => ws.close();
+    return subscribeWs((event) => {
+      setEvents((prev) => [event, ...prev.slice(0, 49)]);
+    });
   }, []);
 
   return { status, rooms, chars, events };
